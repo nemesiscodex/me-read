@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { BookDetail } from '../api'
-import { block, character, segment } from './fixtures'
-import { mergeSegments, mergeTagStates, readerReducer, upsertCharacter, type ReaderData } from './readerState'
+import { block, character, moment, segment } from './fixtures'
+import { mergeMoments, mergeSegments, mergeTagStates, readerReducer, upsertCharacter, type ReaderData } from './readerState'
 
 const book: BookDetail = {
   id: 1,
@@ -17,7 +17,8 @@ const book: BookDetail = {
 
 function opened(): ReaderData {
   const blocks = [block(2, [segment(21, { character_id: 2 })]), block(1, [segment(12), segment(11)])]
-  return readerReducer(null, { type: 'opened', book, chapterIndex: 0, blocks })!
+  const moments = [moment(2), moment(1, { image_state: 'none' }), moment(77)]
+  return readerReducer(null, { type: 'opened', book, chapterIndex: 0, blocks, moments })!
 }
 
 describe('opening a chapter', () => {
@@ -25,6 +26,27 @@ describe('opening a chapter', () => {
     const data = opened()
     expect(data.blocks.map((b) => b.id)).toEqual([1, 2])
     expect(data.blocks[0]!.segments.map((s) => s.id)).toEqual([11, 12])
+  })
+
+  it('keeps the moments of its paragraphs, in reading order', () => {
+    expect(opened().moments.map((m) => m.id)).toEqual([1, 2])
+  })
+})
+
+describe('mergeMoments', () => {
+  it('lets the starred picture of a paragraph take the place of the clear it had', () => {
+    const blocks = [block(1, [segment(10)]), block(2, [segment(20)])]
+    const before = [moment(1), moment(2, { kind: 'clear', scene: '', image_state: 'none' })]
+    const starred = moment(9, { block_id: 2, block_idx: 2, starred: true })
+    expect(mergeMoments(before, blocks, [starred])).toEqual([moment(1), starred])
+  })
+
+  it('replaces a moment by id, adds a new one at its place and drops those of other chapters', () => {
+    const { blocks } = opened()
+    const before = [moment(2)]
+    const merged = mergeMoments(before, blocks, [moment(2, { image_rev: 3 }), moment(5, { block_id: 1, block_idx: 1 }), moment(77)])
+    expect(merged.map((m) => [m.id, m.image_rev])).toEqual([[5, 0], [2, 3]])
+    expect(mergeMoments(before, blocks, [moment(77)])).toBe(before)
   })
 })
 
@@ -69,8 +91,16 @@ describe('server events', () => {
   })
 
   it('records what the workers are doing', () => {
-    const data = readerReducer(opened(), { type: 'event', event: { type: 'activity', tagger: 'Tagging 3', speech: null } })!
-    expect(data.activity).toEqual({ tagger: 'Tagging 3', speech: null })
+    const activity = { tagger: 'Tagging 3', scenes: null, speech: null, images: 'Drawing the scene' }
+    const data = readerReducer(opened(), { type: 'event', event: { type: 'activity', ...activity } })!
+    expect(data.activity).toEqual(activity)
+  })
+
+  it('shows a picture that was just drawn and a redraw that was just asked for', () => {
+    const drawn = readerReducer(opened(), { type: 'event', event: { type: 'moments', moments: [moment(1), moment(77)] } })!
+    expect(drawn.moments.map((m) => [m.id, m.image_state])).toEqual([[1, 'ready'], [2, 'ready']])
+    const asked = readerReducer(drawn, { type: 'momentSaved', moment: moment(2, { image_state: 'none', image_rev: 1 }) })!
+    expect(asked.moments[1]).toMatchObject({ image_state: 'none', image_rev: 1 })
   })
 
   it('ignores an event type it does not know', () => {
@@ -101,9 +131,10 @@ describe('cast edits', () => {
 describe('loading another chapter', () => {
   it('replaces the blocks and marks a fresh layout', () => {
     const before = opened()
-    const after = readerReducer(before, { type: 'chapterLoaded', chapterIndex: 1, blocks: [block(7, [segment(70)])] })!
+    const after = readerReducer(before, { type: 'chapterLoaded', chapterIndex: 1, blocks: [block(7, [segment(70)])], moments: [moment(7)] })!
     expect(after.chapterIndex).toBe(1)
     expect(after.blocks.map((b) => b.id)).toEqual([7])
+    expect(after.moments.map((m) => m.id)).toEqual([7])
     expect(after.loadSeq).toBeGreaterThan(before.loadSeq)
   })
 })

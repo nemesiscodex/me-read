@@ -1,0 +1,12 @@
+[Unit]
+Description=me-read image service
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/me-read-imager
+ExecStart=/usr/bin/uv run --frozen python server.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

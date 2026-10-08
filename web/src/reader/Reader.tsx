@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type MouseEvent } from 'react'
-import { api, type Character, type ServerEvent } from '../api'
+import { api, type Character, type ServerEvent, type Settings } from '../api'
+import { IllustrationSwitch } from './IllustrationSwitch'
 import { TaggerSwitch } from './TaggerSwitch'
 import { Icon } from '../Icon'
 import { characterHue, narratorOf } from '../lib/cast'
 import { anchorAt, chapterContaining, focusFor, layoutFor, placeOf, type Anchor, type Place } from '../lib/pages'
+import { countedMoments, illustrating, momentReached, momentToShow, readingPosition } from '../lib/moments'
 import { activeSegmentId } from '../lib/player'
 import { FONT_SIZE, SPEED, useNumberPref } from '../lib/prefs'
 import { readerReducer } from '../lib/readerState'
@@ -14,6 +16,7 @@ import { BlockView, segmentIdAt, type ActiveMode } from './BlockView'
 import { CastPanel } from './CastPanel'
 import { CorrectionPopover } from './CorrectionPopover'
 import { PlayerBar } from './PlayerBar'
+import { ScenePanel } from './ScenePanel'
 import { SegmentHint, type Hint } from './SegmentHint'
 import { usePagination } from './usePagination'
 import { usePlayer } from './usePlayer'
@@ -59,6 +62,7 @@ export function Reader({ bookId, place }: { bookId: number; place: Place | null 
   const [notice, setNotice] = useState<string | null>(null)
   const [offline, setOffline] = useState(false)
   const [castOpen, setCastOpen] = useState(false)
+  const [settings, setSettings] = useState<Settings | null>(null)
   const [correcting, setCorrecting] = useState<{ segmentId: number; x: number; y: number } | null>(null)
   const [fontPx, setFontPx] = useNumberPref(FONT_SIZE)
   const [rate, setRate] = useNumberPref(SPEED)
@@ -108,10 +112,10 @@ export function Reader({ bookId, place }: { bookId: number; place: Place | null 
     async (chapterIndex: number, land: Anchor | Place | null): Promise<boolean> => {
       const request = ++requests.current
       try {
-        const loaded = await api.getChapter(bookId, chapterIndex)
+        const [loaded, moments] = await Promise.all([api.getChapter(bookId, chapterIndex), api.getMoments(bookId, chapterIndex)])
         if (request !== requests.current) return false
         if (land) setAnchor('kind' in land ? land : anchorAt(loaded, land))
-        dispatch({ type: 'chapterLoaded', chapterIndex, blocks: loaded })
+        dispatch({ type: 'chapterLoaded', chapterIndex, blocks: loaded, moments })
         return true
       } catch (error) {
         if (request === requests.current) setNotice(`Could not load the chapter. ${messageOf(error)}`)
@@ -134,14 +138,16 @@ export function Reader({ bookId, place }: { bookId: number; place: Place | null 
   useEffect(() => {
     let alive = true
     const open = async () => {
-      const book = await api.getBook(bookId)
+      // With the book, so the page is laid out once, with or without the room for pictures.
+      const [book, saved] = await Promise.all([api.getBook(bookId), api.getSettings().catch(() => null)])
       const start = followed.current ?? { block: book.position_block, seq: book.position_seq }
       const first = chapterContaining(book.chapters, start.block)
       if (!first) throw new Error('This book has no chapters.')
-      const loaded = await api.getChapter(bookId, first.index)
+      const [loaded, moments] = await Promise.all([api.getChapter(bookId, first.index), api.getMoments(bookId, first.index)])
       if (!alive) return
       setAnchor(anchorAt(loaded, start))
-      dispatch({ type: 'opened', book, chapterIndex: first.index, blocks: loaded })
+      setSettings(saved)
+      dispatch({ type: 'opened', book, chapterIndex: first.index, blocks: loaded, moments })
     }
     open().catch((error) => alive && setOpenError(messageOf(error)))
     return () => {
@@ -330,7 +336,16 @@ export function Reader({ bookId, place }: { bookId: number; place: Place | null 
   const correctingTarget = correcting ? segments.get(correcting.segmentId) : null
   const speaker =
     active && active.segment.character_id !== null ? (characters.get(active.segment.character_id) ?? null) : null
-  const activity = [data.activity.tagger, data.activity.speech].filter((line) => line !== null && line !== '')
+  const { tagger, scenes, speech, images } = data.activity
+  const activity = [tagger, scenes, speech, images].filter((line) => line !== null && line !== '')
+  const illustrated = illustrating(settings)
+  const position = readingPosition(pagination.spans, pagination.page, active?.block.idx ?? null)
+  const perPage = settings?.pictures_per_page ?? 0
+  const pictures = new Map(
+    (illustrated ? countedMoments(data.moments, pagination.spans, perPage) : [])
+      .filter((moment) => moment.kind === 'picture')
+      .map((moment) => [moment.block_id, moment]),
+  )
   const atStart = pagination.page === 0 && !previousChapter
   const atEnd = pagination.page >= pagination.pageCount - 1 && !nextChapter
 
@@ -373,17 +388,25 @@ export function Reader({ bookId, place }: { bookId: number; place: Place | null 
           >
             A
           </button>
-          <TaggerSwitch activity={data.activity.tagger} />
+          <TaggerSwitch activity={`${tagger}\n${scenes}`} />
+          <IllustrationSwitch settings={settings} onSettings={setSettings} />
           <button className="quiet-button" onClick={() => setCastOpen((open) => !open)} aria-expanded={castOpen}>
             Cast
           </button>
         </div>
       </header>
 
-      <main className="stage">
+      <main className="stage" data-illustrated={illustrated || undefined}>
         <button className="edge" onClick={() => turn(-1)} disabled={atStart} aria-label="Previous page">
           <Icon name="left" size={22} />
         </button>
+        {illustrated && (
+          <ScenePanel
+            shown={momentToShow(data.moments, pagination.spans, perPage, position)}
+            reached={momentReached(data.moments, pagination.spans, perPage, position)}
+            onMoment={(moment) => dispatch({ type: 'momentSaved', moment })}
+          />
+        )}
         <div className="well" ref={wellRef}>
           {layout && (
             <div className="viewport" style={{ width: layout.width, height: layout.height }}>
@@ -403,11 +426,14 @@ export function Reader({ bookId, place }: { bookId: number; place: Place | null 
               >
                 {data.blocks.map((block) => {
                   const holdsActive = active?.block.id === block.id
+                  const picture = pictures.get(block.id)
                   return (
                     <BlockView
                       key={block.id}
                       block={block}
                       narratorId={narratorId}
+                      picture={picture ? (picture.image_state === 'ready' ? 'ready' : 'coming') : null}
+                      starred={picture?.starred ?? false}
                       activeId={holdsActive ? activeId : null}
                       activeMode={holdsActive ? activeMode : null}
                     />
@@ -467,15 +493,18 @@ export function Reader({ bookId, place }: { bookId: number; place: Place | null 
           block={correctingTarget.block}
           characters={data.book.characters}
           at={correcting}
+          canStar={illustrated && !pictures.get(correctingTarget.block.id)?.starred}
           onClose={closeCorrection}
           onSegment={(segment) => dispatch({ type: 'segmentSaved', segment })}
           onCharacter={(character) => dispatch({ type: 'characterSaved', character })}
+          onMoment={(moment) => dispatch({ type: 'momentSaved', moment })}
         />
       )}
 
       {castOpen && (
         <CastPanel
           characters={data.book.characters}
+          settings={settings}
           onClose={closeCast}
           onCharacter={(character) => dispatch({ type: 'characterSaved', character })}
           onMerged={(id, into) => dispatch({ type: 'characterMerged', id, into })}

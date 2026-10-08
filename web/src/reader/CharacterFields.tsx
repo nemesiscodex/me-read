@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import type { CharacterInput } from '../api'
 import { AGES, GENDERS, PITCHES } from '../lib/cast'
 
@@ -5,6 +6,8 @@ interface Props {
   value: CharacterInput
   onChange: (value: CharacterInput) => void
   autoFocus?: boolean
+  /** Show the field for how the character looks, with this control beside its label. */
+  appearance?: { action: ReactNode }
 }
 
 function Choice<T extends string>(props: { label: string; value: T; options: readonly T[]; onChange: (v: T) => void }) {
@@ -22,7 +25,7 @@ function Choice<T extends string>(props: { label: string; value: T; options: rea
   )
 }
 
-export function CharacterFields({ value, onChange, autoFocus }: Props) {
+export function CharacterFields({ value, onChange, autoFocus, appearance }: Props) {
   const set = (patch: Partial<CharacterInput>) => onChange({ ...value, ...patch })
   return (
     <div className="character-fields">
@@ -48,6 +51,22 @@ export function CharacterFields({ value, onChange, autoFocus }: Props) {
           onChange={(event) => set({ description: event.target.value })}
         />
       </label>
+      {appearance && (
+        <div className="field field-wide">
+          <span className="field-head">
+            <label htmlFor="character-appearance">Appearance</label>
+            {appearance.action}
+          </span>
+          <textarea
+            id="character-appearance"
+            rows={2}
+            maxLength={300}
+            value={value.appearance}
+            placeholder="Tall, grey beard, a worn blue coat"
+            onChange={(event) => set({ appearance: event.target.value })}
+          />
+        </div>
+      )}
     </div>
   )
 }

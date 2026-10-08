@@ -95,7 +95,7 @@ export function Library() {
         <h1 className="wordmark">me-read</h1>
         <div className="library-actions">
           <button className="quiet-button" onClick={() => setSettingsOpen(true)}>
-            Tagger settings
+            Settings
           </button>
           <button className="button" onClick={() => fileInput.current?.click()} disabled={adding !== null}>
             Add an EPUB

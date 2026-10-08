@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS block (
   id INTEGER PRIMARY KEY, book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE, idx INTEGER NOT NULL,
   chapter INTEGER NOT NULL, tag TEXT NOT NULL CHECK (tag IN ('p', 'h')),
   tag_state TEXT NOT NULL CHECK (tag_state IN ('pending', 'tagging', 'tagged', 'failed')),
+  scene_state TEXT NOT NULL DEFAULT 'pending' CHECK (scene_state IN ('pending', 'scanning', 'done')),
   UNIQUE (book_id, idx));
 CREATE TABLE IF NOT EXISTS character (
   id INTEGER PRIMARY KEY, book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE, name TEXT NOT NULL,
@@ -29,7 +30,9 @@ CREATE TABLE IF NOT EXISTS character (
   voice_state TEXT NOT NULL DEFAULT 'none' CHECK (voice_state IN ('none', 'designing', 'ready', 'failed')),
   voice_rev INTEGER NOT NULL DEFAULT 0, error TEXT,
   draft_state TEXT NOT NULL DEFAULT 'none' CHECK (draft_state IN ('none', 'queued', 'designing', 'ready', 'failed')),
-  draft_rev INTEGER NOT NULL DEFAULT 0);
+  draft_rev INTEGER NOT NULL DEFAULT 0, appearance TEXT NOT NULL DEFAULT '',
+  portrait_state TEXT NOT NULL DEFAULT 'none' CHECK (portrait_state IN ('none', 'drawing', 'ready', 'failed')),
+  portrait_rev INTEGER NOT NULL DEFAULT 0, portrait_error TEXT);
 CREATE TABLE IF NOT EXISTS usage (
   day TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, calls INTEGER NOT NULL DEFAULT 0,
   paragraphs INTEGER NOT NULL DEFAULT 0, cost_usd REAL NOT NULL DEFAULT 0, PRIMARY KEY (day, provider, model));
@@ -42,17 +45,42 @@ CREATE TABLE IF NOT EXISTS segment (
   audio_rev INTEGER NOT NULL DEFAULT 0, duration REAL, error TEXT);
 CREATE INDEX IF NOT EXISTS segment_order ON segment (book_id, block_idx, seq);
 CREATE INDEX IF NOT EXISTS segment_character ON segment (character_id);
+CREATE TABLE IF NOT EXISTS moment (
+  id INTEGER PRIMARY KEY, book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
+  block_id INTEGER NOT NULL UNIQUE REFERENCES block(id) ON DELETE CASCADE, block_idx INTEGER NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'picture' CHECK (kind IN ('picture', 'clear')), scene TEXT NOT NULL,
+  image_state TEXT NOT NULL DEFAULT 'none' CHECK (image_state IN ('none', 'drawing', 'ready', 'failed')),
+  image_rev INTEGER NOT NULL DEFAULT 0, error TEXT, wanted INTEGER NOT NULL DEFAULT 0,
+  starred INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS moment_order ON moment (book_id, block_idx);
+CREATE TABLE IF NOT EXISTS moment_character (
+  moment_id INTEGER NOT NULL REFERENCES moment(id) ON DELETE CASCADE,
+  character_id INTEGER NOT NULL REFERENCES character(id) ON DELETE CASCADE, pos INTEGER NOT NULL,
+  PRIMARY KEY (moment_id, character_id));
+CREATE INDEX IF NOT EXISTS moment_character_of ON moment_character (character_id);
 """
 SEGMENT = 'id, block_id, seq, text, kind, character_id, audio_state, audio_rev, duration, error'
 CHARACTER = ('c.id, c.book_id, c.name, c.role, c.gender, c.age, c.pitch, c.description, c.voice_state, c.voice_rev, '
-             'c.error, c.draft_state, c.draft_rev, (SELECT COUNT(*) FROM segment s WHERE s.character_id = c.id AND s.kind = \'speech\') AS line_count')
-FIELDS = ('name', 'gender', 'age', 'pitch', 'description')
+             'c.error, c.draft_state, c.draft_rev, c.appearance, c.portrait_state, c.portrait_rev, c.portrait_error, (SELECT COUNT(*) FROM segment s WHERE s.character_id = c.id AND s.kind = \'speech\') AS line_count')
+MOMENT = 'm.id, m.block_id, m.block_idx, m.kind, m.scene, m.image_state, m.image_rev, m.error, m.starred'
+# The moments a character is drawn in.
+FEATURING = 'm.id IN (SELECT moment_id FROM moment_character WHERE character_id = ?)'
+FIELDS = ('name', 'gender', 'age', 'pitch', 'description', 'appearance')
 DEFAULT_SETTINGS = {'provider': 'claude', 'claude_model': 'claude-haiku-5-5', 'codex_model': 'gpt-6-luna',
-                    'tagging_paused': False}
+                    'tagging_paused': False, 'image_url': '', 'illustrations': True, 'pictures_per_page': 2}
 # Columns added after the first release, for libraries created before them.
 ADDED_COLUMNS = {'book': {'language': "TEXT NOT NULL DEFAULT 'en'", 'position_seq': 'INTEGER NOT NULL DEFAULT 0'}, 'character': {
     'draft_state': "TEXT NOT NULL DEFAULT 'none' CHECK (draft_state IN ('none', 'queued', 'designing', 'ready', 'failed'))",
-    'draft_rev': 'INTEGER NOT NULL DEFAULT 0'}}
+    'draft_rev': 'INTEGER NOT NULL DEFAULT 0', 'appearance': "TEXT NOT NULL DEFAULT ''",
+    'portrait_state': "TEXT NOT NULL DEFAULT 'none' CHECK (portrait_state IN ('none', 'drawing', 'ready', 'failed'))",
+    'portrait_rev': 'INTEGER NOT NULL DEFAULT 0', 'portrait_error': 'TEXT'},
+    'block': {'scene_state': "TEXT NOT NULL DEFAULT 'pending' CHECK (scene_state IN ('pending', 'scanning', 'done'))"},
+    'moment': {'wanted': 'INTEGER NOT NULL DEFAULT 0', 'starred': 'INTEGER NOT NULL DEFAULT 0'}}
+
+
+def illustrating(settings):
+    """Whether moments are looked for and drawn: there is an image service and the reader has not switched it off."""
+    return bool(settings['image_url'] and settings['illustrations'])
 
 
 class Store:
@@ -76,6 +104,9 @@ class Store:
         self.run("UPDATE segment SET audio_state = 'none' WHERE audio_state = 'generating'")
         self.run("UPDATE character SET voice_state = 'none' WHERE voice_state = 'designing'")
         self.run("UPDATE character SET draft_state = 'queued' WHERE draft_state = 'designing'")
+        self.run("UPDATE block SET scene_state = 'pending' WHERE scene_state = 'scanning'")
+        self.run("UPDATE character SET portrait_state = 'none' WHERE portrait_state = 'drawing'")
+        self.run("UPDATE moment SET image_state = 'none' WHERE image_state = 'drawing'")
 
     def run(self, sql, args=()):
         with self.lock:
@@ -102,6 +133,12 @@ class Store:
 
     def audio_path(self, book_id, segment_id):
         return self.book_dir(book_id) / 'audio' / f'{segment_id}.flac'
+
+    def portrait_path(self, character):
+        return self.book_dir(character['book_id']) / 'portraits' / f"{character['id']}.png"
+
+    def moment_path(self, book_id, moment_id):
+        return self.book_dir(book_id) / 'moments' / f'{moment_id}.png'
 
     # Settings
 
@@ -198,24 +235,36 @@ class Store:
     def narrator(self, book_id):
         return self.one(f"SELECT {CHARACTER} FROM character c WHERE c.book_id = ? AND c.role = 'narrator'", (book_id,))
 
-    def add_character(self, book_id, name, role='named', gender='unknown', age='adult', pitch='medium', description=''):
+    def add_character(self, book_id, name, role='named', gender='unknown', age='adult', pitch='medium', description='',
+                      appearance=''):
         """Return the character with this name, creating it when the book has none."""
         with self.lock:
             found = self.one('SELECT id FROM character WHERE book_id = ? AND lower(name) = lower(?)', (book_id, name.strip()))
             if found:
                 return self.character(found['id'])
-            new_id = self.run('INSERT INTO character (book_id, name, role, gender, age, pitch, description) '
-                              'VALUES (?, ?, ?, ?, ?, ?, ?)',
-                              (book_id, name.strip(), role, gender, age, pitch, description.strip())).lastrowid
+            new_id = self.run('INSERT INTO character (book_id, name, role, gender, age, pitch, description, appearance) '
+                              'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                              (book_id, name.strip(), role, gender, age, pitch, description.strip(), appearance.strip())).lastrowid
             return self.character(new_id)
 
     def update_character(self, character_id, changes):
-        """Apply edits. The voice stays as it is until a new sample is approved."""
+        """Apply edits. The voice stays as it is until a new sample is approved; a new appearance is drawn at once."""
         fields = {k: v for k, v in changes.items() if k in FIELDS and v is not None}
-        if fields:
-            self.run(f"UPDATE character SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?",
-                     (*fields.values(), character_id))
-        return self.character(character_id)
+        with self.lock:
+            before = self.character(character_id)
+            if fields:
+                self.run(f"UPDATE character SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?",
+                         (*fields.values(), character_id))
+            if fields.get('appearance', before['appearance']) != before['appearance']:
+                self.reset_portrait(character_id)
+            return self.character(character_id)
+
+    def reset_portrait(self, character_id):
+        """Drop the portrait and the pictures it was a reference for. The new revisions make drawings in flight land nowhere."""
+        with self.lock:
+            self.run("UPDATE character SET portrait_state = 'none', portrait_rev = portrait_rev + 1, portrait_error = NULL "
+                     'WHERE id = ?', (character_id,))
+            self.redraw_moments(FEATURING, (character_id,))
 
     def request_draft(self, character_id):
         """Ask for a candidate voice sample. The current voice and its clips stay until the candidate is approved."""
@@ -248,6 +297,8 @@ class Store:
         with self.lock:
             self.run('UPDATE segment SET character_id = ? WHERE character_id = ?', (into, character_id))
             self.invalidate_audio('character_id = ?', (into,))
+            # A moment that shows both keeps the survivor's row; the other goes with the deleted character.
+            self.run('UPDATE OR IGNORE moment_character SET character_id = ? WHERE character_id = ?', (into, character_id))
             self.run('DELETE FROM character WHERE id = ?', (character_id,))
 
     # Segments
@@ -274,3 +325,26 @@ class Store:
             self.run("UPDATE segment SET character_id = NULL WHERE block_id = ? AND kind = 'speech'", (block_id,))
             self.invalidate_audio("block_id = ? AND kind = 'speech'", (block_id,))
             self.run("UPDATE block SET tag_state = 'pending' WHERE id = ?", (block_id,))
+
+    # Moments
+
+    def moments_where(self, where, args=()):
+        moments = self.all(f'SELECT {MOMENT} FROM moment m WHERE {where} ORDER BY m.block_idx', args)
+        for m in moments:
+            m['starred'] = bool(m['starred'])
+            m['character_ids'] = [row['character_id'] for row in self.all(
+                'SELECT character_id FROM moment_character WHERE moment_id = ? ORDER BY pos', (m['id'],))]
+        return moments
+
+    def moment(self, moment_id):
+        found = self.moments_where('m.id = ?', (moment_id,))
+        return found[0] if found else None
+
+    def chapter_moments(self, book_id, chapter):
+        row = self.one('SELECT first_block, block_count FROM chapter WHERE book_id = ? AND idx = ?', (book_id, chapter))
+        return None if row is None else self.moments_where(
+            'm.book_id = ? AND m.block_idx BETWEEN ? AND ?', (book_id, row['first_block'], row['first_block'] + row['block_count'] - 1))
+
+    def redraw_moments(self, where, args=()):
+        self.run("UPDATE moment AS m SET image_state = 'none', image_rev = image_rev + 1, error = NULL "
+                 f"WHERE m.kind = 'picture' AND {where}", args)
