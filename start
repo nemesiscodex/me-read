@@ -1,0 +1,7 @@
+#!/bin/sh
+# Build the web app and start the server that serves it. Arguments go to the server, e.g. ./start --port 9000
+set -e
+cd "$(dirname "$0")"
+
+(cd web && pnpm install --silent && pnpm build)
+cd server && exec uv run python -m meread "$@"
