@@ -178,6 +178,48 @@ button:disabled {
   grid-column: 1 / -1;
 }
 
+.field-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.field-action {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink-soft);
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.field-action:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+.field-help {
+  grid-column: 1 / -1;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+
+.illustration-settings {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 0.5rem 0.75rem;
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+}
+
+.illustration-settings select {
+  width: auto;
+  justify-self: start;
+}
+
 .row-actions {
   display: flex;
   justify-content: flex-end;

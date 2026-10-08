@@ -1,0 +1,28 @@
+[project]
+name = "me-read-imager"
+version = "0.1.0"
+description = "Image service for me-read: FLUX.2 klein 4B behind a small HTTP API, for a machine with an AMD GPU"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "torch>=2.9",
+    "pytorch-triton-rocm",
+    "diffusers>=0.41",
+    "transformers>=5",
+    "accelerate>=1",
+    "gguf>=0.17",
+    "sentencepiece>=0.2",
+    "protobuf>=5",
+    "pillow>=11",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-rocm" }
+# torch needs it and only the PyTorch index has it.
+pytorch-triton-rocm = { index = "pytorch-rocm" }
+
+[[tool.uv.index]]
+name = "pytorch-rocm"
+url = "https://download.pytorch.org/whl/rocm6.4"
+explicit = true

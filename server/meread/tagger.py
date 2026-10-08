@@ -61,6 +61,11 @@ def _voice_line(c):
     return f"c{c['id']} | {c['name']} | {c['role']} | {traits} | {c['description']}"
 
 
+def book_line(book):
+    return (f"BOOK: {book['title']}" + (f" by {book['author']}" if book['author'] else '')
+            + f" (language: {LANGUAGE_NAMES.get(book.get('language'), 'English')})")
+
+
 def build_prompt(book, cast, earlier, blocks):
     """The prompt, and the segment id behind each [[qN]] marker.
 
@@ -84,8 +89,7 @@ def build_prompt(book, cast, earlier, blocks):
     target = [render(block, True) for block in blocks]
     speaking = [c for c in cast if c['role'] != 'narrator']
     prompt = '\n\n'.join([
-        f"BOOK: {book['title']}" + (f" by {book['author']}" if book['author'] else '')
-        + f" (language: {LANGUAGE_NAMES.get(book.get('language'), 'English')})",
+        book_line(book),
         'CAST SO FAR (ref | name | role | voice | description):\n' + ('\n'.join(map(_voice_line, speaking)) or '(nobody yet)'),
         'EARLIER TEXT, for context only. A known speaker follows the quotation in brackets:\n' + ('\n'.join(context) or '(start of the book)'),
         'TEXT TO ATTRIBUTE:\n' + '\n\n'.join(target)])
@@ -110,10 +114,10 @@ def _parse(text):
         return None
 
 
-def ask_claude(prompt, model, cwd, timeout=180):
+def ask_claude(prompt, model, cwd, timeout=180, system=SYSTEM, schema=SCHEMA):
     done = _run(['claude', '-p', '--model', model, '--setting-sources', '', '--strict-mcp-config',
                  '--disable-slash-commands', '--tools', '', '--no-session-persistence', '--output-format', 'json',
-                 '--system-prompt', SYSTEM, '--json-schema', json.dumps(SCHEMA)], prompt, cwd, timeout)
+                 '--system-prompt', system, '--json-schema', json.dumps(schema)], prompt, cwd, timeout)
     reply = _parse(done.stdout) or {}
     if done.returncode != 0 or reply.get('is_error'):
         raise TaggerError(f"claude failed: {reply.get('result') or done.stderr.strip() or done.stdout.strip()[:300]}")
@@ -123,13 +127,13 @@ def ask_claude(prompt, model, cwd, timeout=180):
     return answer, reply.get('total_cost_usd')
 
 
-def ask_codex(prompt, model, cwd, timeout=240):
+def ask_codex(prompt, model, cwd, timeout=240, system=SYSTEM, schema=SCHEMA):
     with tempfile.TemporaryDirectory() as tmp:
-        schema, out = Path(tmp) / 'schema.json', Path(tmp) / 'answer.json'
-        schema.write_text(json.dumps(SCHEMA))
+        schema_file, out = Path(tmp) / 'schema.json', Path(tmp) / 'answer.json'
+        schema_file.write_text(json.dumps(schema))
         done = _run(['codex', 'exec', '-m', model, '-c', 'model_reasoning_effort=low', '-c', 'mcp_servers={}',
-                     '--skip-git-repo-check', '--ephemeral', '-s', 'read-only', '--output-schema', str(schema),
-                     '-o', str(out), '-'], f'{SYSTEM}\n\n{prompt}', cwd, timeout)
+                     '--skip-git-repo-check', '--ephemeral', '-s', 'read-only', '--output-schema', str(schema_file),
+                     '-o', str(out), '-'], f'{system}\n\n{prompt}', cwd, timeout)
         answer = _parse(out.read_text()) if out.exists() else None
     if not isinstance(answer, dict):
         errors = [line for line in (done.stdout + done.stderr).splitlines() if line.startswith('ERROR')]
@@ -137,11 +141,11 @@ def ask_codex(prompt, model, cwd, timeout=240):
     return answer, None
 
 
-def ask(settings, prompt, cwd):
+def ask(settings, prompt, cwd, system=SYSTEM, schema=SCHEMA):
     """(answer, cost in US dollars as the CLI reports it, or None when it reports none)."""
     if settings['provider'] == 'codex':
-        return ask_codex(prompt, settings['codex_model'], cwd)
-    return ask_claude(prompt, settings['claude_model'], cwd)
+        return ask_codex(prompt, settings['codex_model'], cwd, system=system, schema=schema)
+    return ask_claude(prompt, settings['claude_model'], cwd, system=system, schema=schema)
 
 
 def _pick(value, allowed, default):

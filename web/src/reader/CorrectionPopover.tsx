@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
-import { api, type Block, type Character, type CharacterInput, type Segment } from '../api'
+import { api, type Block, type Character, type CharacterInput, type Moment, type Segment } from '../api'
 import { EMPTY_CHARACTER, sortCast } from '../lib/cast'
 import { hueStyle } from './BlockView'
 import { CharacterFields } from './CharacterFields'
@@ -10,9 +10,12 @@ interface Props {
   block: Block
   characters: Character[]
   at: { x: number; y: number }
+  /** Illustrations are on and the paragraph has no starred picture yet. */
+  canStar: boolean
   onClose: () => void
   onSegment: (segment: Segment) => void
   onCharacter: (character: Character) => void
+  onMoment: (moment: Moment) => void
 }
 
 const MARGIN = 12
@@ -22,11 +25,12 @@ function excerpt(text: string): string {
   return flat.length > 90 ? `${flat.slice(0, 88).trimEnd()}…` : flat
 }
 
-export function CorrectionPopover({ bookId, segment, block, characters, at, onClose, onSegment, onCharacter }: Props) {
+export function CorrectionPopover({ bookId, segment, block, characters, at, canStar, onClose, onSegment, onCharacter, onMoment }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const [position, setPosition] = useState(at)
   const [draft, setDraft] = useState<CharacterInput | null>(null)
   const [busy, setBusy] = useState(false)
+  const [starring, setStarring] = useState(false)
   const [message, setMessage] = useState<{ text: string; problem: boolean } | null>(null)
 
   useLayoutEffect(() => {
@@ -96,6 +100,14 @@ export function CorrectionPopover({ bookId, segment, block, characters, at, onCl
       return 'Asked the tagger to look at this paragraph again.'
     })
 
+  const star = () => {
+    setStarring(true)
+    return attempt(async () => {
+      onMoment(await api.starBlock(block.id))
+      return null
+    }).finally(() => setStarring(false))
+  }
+
   return (
     <div
       className="popover"
@@ -151,6 +163,14 @@ export function CorrectionPopover({ bookId, segment, block, characters, at, onCl
             <button className="menu-button" onClick={() => void retag()} disabled={busy}>
               Tag this paragraph again
             </button>
+            {canStar && (
+              <>
+                <button className="menu-button" onClick={() => void star()} disabled={busy} aria-busy={starring}>
+                  {starring ? 'Asking what this moment shows…' : 'Draw a picture of this moment'}
+                </button>
+                <p className="popover-note">Makes one Claude or Codex call when the paragraph has no moment yet.</p>
+              </>
+            )}
           </div>
         </>
       )}

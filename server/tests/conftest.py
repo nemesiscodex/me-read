@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
+from meread import images, scenes
 from meread.app import create_app
 
 PARAGRAPHS = [
@@ -66,29 +67,55 @@ class FakeEngine:
 
 
 class FakeTagger:
-    """Answers like the LLM would for the test book, and keeps the prompts it saw."""
+    """Answers like the LLM would for the test book, and keeps the prompts it saw.
+
+    The system prompt of a call tells what is asked: who speaks (`answer`), which moments to draw (`scenes`), what
+    a starred paragraph shows (`star`), or how one character looks (`look`).
+    """
 
     def __init__(self):
         self.prompts, self.answer, self.error, self.cost = [], None, None, 0.002
+        self.scene_prompts, self.scenes, self.scene_error = [], {'moments': [], 'ends': [], 'appearances': []}, None
+        self.look_prompts, self.look, self.look_error = [], {'appearance': ''}, None
+        self.star_prompts, self.star, self.star_error = [], {'moments': [], 'ends': [], 'appearances': []}, None
 
-    def __call__(self, settings, prompt, cwd):
-        self.prompts.append(prompt)
+    def __call__(self, settings, prompt, cwd, system=None, schema=None):
+        prompts, answer, error = {scenes.SYSTEM: (self.scene_prompts, self.scenes, self.scene_error),
+                                  scenes.STAR_SYSTEM: (self.star_prompts, self.star, self.star_error),
+                                  scenes.LOOK_SYSTEM: (self.look_prompts, self.look, self.look_error)}.get(
+            system, (self.prompts, self.answer, self.error))
+        prompts.append(prompt)
+        if error:
+            raise error
+        return (answer(prompt) if callable(answer) else answer), self.cost
+
+
+class FakeImager:
+    """Stands in for the image service: records each request and returns a tiny PNG, or raises `error`."""
+
+    def __init__(self):
+        self.drawn, self.error, self.during = [], None, None
+
+    def __call__(self, url, prompt, width, height, seed, references=()):
         if self.error:
             raise self.error
-        return (self.answer(prompt) if callable(self.answer) else self.answer), self.cost
+        self.drawn.append({'url': url, 'prompt': prompt, 'size': (width, height), 'seed': seed, 'references': list(references)})
+        if self.during:
+            self.during()
+        return images.PNG + f'{seed}'.encode()
 
 
 @pytest.fixture
 def world(tmp_path):
-    engine, ask = FakeEngine(), FakeTagger()
-    app = create_app(tmp_path, engine=engine, ask=ask, run_workers=False)
+    engine, ask, draw = FakeEngine(), FakeTagger(), FakeImager()
+    app = create_app(tmp_path, engine=engine, ask=ask, draw=draw, run_workers=False)
     with TestClient(app) as client:
         book = client.post('/api/books', files={'file': ('gate.epub', make_epub(), 'application/epub+zip')}).json()
 
         class World:
             pass
         w = World()
-        w.client, w.engine, w.ask, w.store, w.pipeline, w.book = client, engine, ask, app.state.store, app.state.pipeline, book
+        w.client, w.engine, w.ask, w.draw, w.store, w.pipeline, w.book = client, engine, ask, draw, app.state.store, app.state.pipeline, book
         w.events = []
         w.pipeline.publish = lambda book_id, event: w.events.append(event)
 
@@ -96,7 +123,7 @@ def world(tmp_path):
             return client.get(f"/api/books/{book['id']}/chapters/{n}").json()
 
         def drain():
-            while w.pipeline.tag_step() or w.pipeline.speech_step():
+            while w.pipeline.tag_step() or w.pipeline.scene_step() or w.pipeline.speech_step() or w.pipeline.image_step():
                 pass
         w.chapter, w.drain = chapter, drain
         yield w

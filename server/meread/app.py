@@ -1,6 +1,7 @@
 """HTTP API and event stream for the reader."""
 import asyncio
 import json
+import re
 import shutil
 import tempfile
 from contextlib import asynccontextmanager
@@ -10,11 +11,11 @@ from typing import Literal, Optional
 from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-from . import epub, speech
+from . import epub, speech, tagger
 from .pipeline import Pipeline
-from .store import Store
+from .store import FEATURING, Store, illustrating
 
 Gender = Literal['male', 'female', 'unknown']
 Age = Literal['child', 'teen', 'adult', 'elderly']
@@ -27,6 +28,7 @@ class CharacterInput(BaseModel):
     age: Age = 'adult'
     pitch: Pitch = 'medium'
     description: str = Field('', max_length=200)
+    appearance: str = Field('', max_length=300)
 
 
 class CharacterChanges(BaseModel):
@@ -35,6 +37,7 @@ class CharacterChanges(BaseModel):
     age: Optional[Age] = None
     pitch: Optional[Pitch] = None
     description: Optional[str] = Field(None, max_length=200)
+    appearance: Optional[str] = Field(None, max_length=300)
 
 
 class SettingsChanges(BaseModel):
@@ -42,6 +45,17 @@ class SettingsChanges(BaseModel):
     claude_model: Optional[str] = Field(None, min_length=1, max_length=80)
     codex_model: Optional[str] = Field(None, min_length=1, max_length=80)
     tagging_paused: Optional[bool] = None
+    image_url: Optional[str] = Field(None, max_length=300)
+    illustrations: Optional[bool] = None
+    pictures_per_page: Optional[int] = Field(None, ge=1, le=4)
+
+    @field_validator('image_url')
+    @classmethod
+    def service_address(cls, value):
+        value = value and value.strip().rstrip('/')
+        if value and not re.fullmatch(r'https?://[^\s/]+(/\S*)?', value):
+            raise ValueError('enter an address that starts with http:// or https://, or leave it empty')
+        return value
 
 
 class Place(BaseModel):
@@ -95,11 +109,11 @@ class Hub:
             self.listeners[book_id].discard(queue)
 
 
-def create_app(home, engine=None, ask=None, web_dir=None, run_workers=True):
+def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers=True):
     store = Store(home)
     hub = Hub()
     engine = engine or speech.Engine(Path(home) / 'models/hub')
-    pipeline = Pipeline(store, engine, publish=hub.publish, **({'ask': ask} if ask else {}))
+    pipeline = Pipeline(store, engine, publish=hub.publish, **({'ask': ask} if ask else {}), **({'draw': draw} if draw else {}))
 
     @asynccontextmanager
     async def lifespan(app):
@@ -129,6 +143,19 @@ def create_app(home, engine=None, ask=None, web_dir=None, run_workers=True):
         if segments:
             hub.publish(book_id, {'type': 'segments', 'segments': segments})
         pipeline.nudge()
+
+    def announce_moments(book_id, where, args=()):
+        moments = store.moments_where(where, args)
+        if moments:
+            hub.publish(book_id, {'type': 'moments', 'moments': moments})
+
+    def picture_of(moment_id):
+        moment = found(store.one('SELECT id, book_id, kind FROM moment WHERE id = ?', (moment_id,)), 'moment')
+        if moment['kind'] != 'picture':
+            raise HTTPException(404, 'this moment has no picture')
+        return moment
+
+    PNG = {'media_type': 'image/png', 'headers': {'Cache-Control': 'private, max-age=31536000, immutable'}}
 
     @app.get('/api/books')
     def list_books():
@@ -162,6 +189,28 @@ def create_app(home, engine=None, ask=None, web_dir=None, run_workers=True):
     @app.get('/api/books/{book_id}/chapters/{chapter}')
     def get_chapter(book_id: int, chapter: int):
         return found(store.chapter_blocks(book_id, chapter), 'chapter')
+
+    @app.get('/api/books/{book_id}/chapters/{chapter}/moments')
+    def get_moments(book_id: int, chapter: int):
+        return found(store.chapter_moments(book_id, chapter), 'chapter')
+
+    @app.get('/api/moments/{moment_id}/image')
+    def moment_image(moment_id: int):
+        moment = picture_of(moment_id)
+        path = store.moment_path(moment['book_id'], moment_id)
+        if store.moment(moment_id)['image_state'] != 'ready' or not path.exists():
+            raise HTTPException(404, 'this moment is not drawn yet')
+        return FileResponse(path, **PNG)
+
+    @app.post('/api/moments/{moment_id}/redraw')
+    def redraw_moment(moment_id: int):
+        book_id = picture_of(moment_id)['book_id']
+        # Asking for a picture by hand also asks for one the page cap or a quick page turn left undrawn.
+        store.run('UPDATE moment SET wanted = 1 WHERE id = ?', (moment_id,))
+        store.redraw_moments('m.id = ?', (moment_id,))
+        announce_moments(book_id, 'm.id = ?', (moment_id,))
+        pipeline.nudge()
+        return store.moment(moment_id)
 
     @app.post('/api/books/{book_id}/focus', status_code=204)
     def set_focus(book_id: int, focus: Focus):
@@ -207,10 +256,24 @@ def create_app(home, engine=None, ask=None, web_dir=None, run_workers=True):
         hub.publish(block['book_id'], {'type': 'blocks', 'blocks': [{'id': block_id, 'tag_state': 'pending'}]})
         announce(block['book_id'], 'block_id = ?', (block_id,))
 
+    @app.post('/api/blocks/{block_id}/star')
+    def star_block(block_id: int):
+        block = found(store.one('SELECT id, book_id, idx FROM block WHERE id = ?', (block_id,)), 'paragraph')
+        if not illustrating(store.settings()):
+            raise HTTPException(409, 'illustrations are off, so nothing would be drawn')
+        try:
+            moment = pipeline.star(block)
+        except tagger.TaggerError as e:
+            raise HTTPException(502, str(e))
+        announce(block['book_id'], '0')
+        announce_moments(block['book_id'], 'm.id = ?', (moment['id'],))
+        return moment
+
     @app.post('/api/books/{book_id}/characters')
     def create_character(book_id: int, body: CharacterInput):
         found(store.book(book_id), 'book')
-        character = store.add_character(book_id, body.name, 'named', body.gender, body.age, body.pitch, body.description)
+        character = store.add_character(book_id, body.name, 'named', body.gender, body.age, body.pitch, body.description,
+                                        body.appearance)
         announce(book_id, '0')
         return character
 
@@ -219,7 +282,39 @@ def create_app(home, engine=None, ask=None, web_dir=None, run_workers=True):
         book_id = character_of(character_id)['book_id']
         character = store.update_character(character_id, body.model_dump(exclude_none=True))
         announce(book_id, 'character_id = ?', (character_id,))
+        announce_moments(book_id, FEATURING, (character_id,))
         return character
+
+    @app.post('/api/characters/{character_id}/appearance/find')
+    def find_appearance(character_id: int):
+        character = character_of(character_id)
+        if character['role'] == 'narrator':
+            raise HTTPException(422, 'the narrator is never drawn')
+        try:
+            character = pipeline.find_appearance(character)
+        except tagger.TaggerError as e:
+            raise HTTPException(502, str(e))
+        announce(character['book_id'], '0')
+        announce_moments(character['book_id'], FEATURING, (character_id,))
+        return character
+
+    @app.get('/api/characters/{character_id}/portrait')
+    def character_portrait(character_id: int):
+        character = character_of(character_id)
+        path = store.portrait_path(character)
+        if character['portrait_state'] != 'ready' or not path.exists():
+            raise HTTPException(404, 'this character has no portrait yet')
+        return FileResponse(path, **PNG)
+
+    @app.post('/api/characters/{character_id}/portrait/redraw')
+    def redraw_portrait(character_id: int):
+        character = character_of(character_id)
+        if character['role'] == 'narrator':
+            raise HTTPException(422, 'the narrator is never drawn')
+        store.reset_portrait(character_id)
+        announce(character['book_id'], '0')
+        announce_moments(character['book_id'], FEATURING, (character_id,))
+        return store.character(character_id)
 
     @app.post('/api/characters/{character_id}/voice/draft')
     def request_draft(character_id: int):
@@ -289,7 +384,9 @@ def create_app(home, engine=None, ask=None, web_dir=None, run_workers=True):
         store.merge_character(character_id, body.into)
         store.voice_path(character).unlink(missing_ok=True)
         store.draft_path(character).unlink(missing_ok=True)
+        store.portrait_path(character).unlink(missing_ok=True)
         announce(character['book_id'], 'character_id = ?', (body.into,))
+        announce_moments(character['book_id'], FEATURING, (body.into,))
 
     @app.get('/api/settings')
     def get_settings():

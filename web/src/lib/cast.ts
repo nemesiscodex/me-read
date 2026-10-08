@@ -10,6 +10,7 @@ export const EMPTY_CHARACTER: CharacterInput = {
   age: 'adult',
   pitch: 'medium',
   description: '',
+  appearance: '',
 }
 
 const GOLDEN_ANGLE = 137.508
@@ -34,8 +35,8 @@ export function sortCast(characters: Character[]): Character[] {
 }
 
 export function inputOf(character: Character): CharacterInput {
-  const { name, gender, age, pitch, description } = character
-  return { name, gender, age, pitch, description }
+  const { name, gender, age, pitch, description, appearance } = character
+  return { name, gender, age, pitch, description, appearance }
 }
 
 /** Only the fields that differ, so an untouched voice field never triggers a redesign. */

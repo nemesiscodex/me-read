@@ -1,8 +1,10 @@
-import type { Block, BookDetail, Character, Segment, ServerEvent, TagState } from '../api'
+import type { Block, BookDetail, Character, Moment, Segment, ServerEvent, TagState } from '../api'
 
 export interface Activity {
   tagger: string | null
+  scenes: string | null
   speech: string | null
+  images: string | null
 }
 
 /** Everything the reader shows for one book: the cast and the single loaded chapter. */
@@ -12,18 +14,21 @@ export interface ReaderData {
   chapterIndex: number
   /** Sorted by `idx`, each block's segments sorted by `seq`. */
   blocks: Block[]
+  /** The moments of the loaded chapter, sorted by `block_idx`. */
+  moments: Moment[]
   /** Bumped every time a chapter's blocks are replaced wholesale. */
   loadSeq: number
   activity: Activity
 }
 
 export type ReaderAction =
-  | { type: 'opened'; book: BookDetail; chapterIndex: number; blocks: Block[] }
+  | { type: 'opened'; book: BookDetail; chapterIndex: number; blocks: Block[]; moments: Moment[] }
   | { type: 'bookRefreshed'; book: BookDetail }
-  | { type: 'chapterLoaded'; chapterIndex: number; blocks: Block[] }
+  | { type: 'chapterLoaded'; chapterIndex: number; blocks: Block[]; moments: Moment[] }
   | { type: 'event'; event: ServerEvent }
   | { type: 'segmentSaved'; segment: Segment }
   | { type: 'characterSaved'; character: Character }
+  | { type: 'momentSaved'; moment: Moment }
   | { type: 'characterMerged'; id: number; into: number }
 
 const bySeq = (a: Segment, b: Segment) => a.seq - b.seq
@@ -72,6 +77,22 @@ export function upsertCharacter(characters: Character[], character: Character): 
     : [...characters, character]
 }
 
+/**
+ * Replaces the moment of a paragraph and adds those of other paragraphs in reading order; a paragraph has one at
+ * most, so a starred picture takes the place of a clear. Moments of unloaded blocks are dropped.
+ */
+export function mergeMoments(moments: Moment[], blocks: Block[], incoming: Moment[]): Moment[] {
+  const loaded = new Set(blocks.map((block) => block.id))
+  const merged = new Map(moments.map((moment) => [moment.block_id, moment]))
+  let changed = false
+  for (const moment of incoming) {
+    if (!loaded.has(moment.block_id)) continue
+    merged.set(moment.block_id, moment)
+    changed = true
+  }
+  return changed ? [...merged.values()].sort((a, b) => a.block_idx - b.block_idx) : moments
+}
+
 /** Local picture of a merge until the server's events arrive: `id` disappears and its lines belong to `into`. */
 export function mergeCharacterInto(data: ReaderData, id: number, into: number): ReaderData {
   const removed = data.book.characters.find((c) => c.id === id)
@@ -95,8 +116,13 @@ function applyEvent(data: ReaderData, event: ServerEvent): ReaderData {
       return { ...data, blocks: mergeTagStates(data.blocks, event.blocks) }
     case 'characters':
       return { ...data, book: { ...data.book, characters: event.characters } }
+    case 'moments':
+      return { ...data, moments: mergeMoments(data.moments, data.blocks, event.moments) }
     case 'activity':
-      return { ...data, activity: { tagger: event.tagger, speech: event.speech } }
+      return {
+        ...data,
+        activity: { tagger: event.tagger, scenes: event.scenes, speech: event.speech, images: event.images },
+      }
     default:
       return data
   }
@@ -108,8 +134,9 @@ export function readerReducer(data: ReaderData | null, action: ReaderAction): Re
       book: action.book,
       chapterIndex: action.chapterIndex,
       blocks: sortBlocks(action.blocks),
+      moments: mergeMoments([], action.blocks, action.moments),
       loadSeq: (data?.loadSeq ?? 0) + 1,
-      activity: { tagger: null, speech: null },
+      activity: { tagger: null, scenes: null, speech: null, images: null },
     }
   }
   if (!data) return data
@@ -117,13 +144,21 @@ export function readerReducer(data: ReaderData | null, action: ReaderAction): Re
     case 'bookRefreshed':
       return { ...data, book: action.book }
     case 'chapterLoaded':
-      return { ...data, chapterIndex: action.chapterIndex, blocks: sortBlocks(action.blocks), loadSeq: data.loadSeq + 1 }
+      return {
+        ...data,
+        chapterIndex: action.chapterIndex,
+        blocks: sortBlocks(action.blocks),
+        moments: mergeMoments([], action.blocks, action.moments),
+        loadSeq: data.loadSeq + 1,
+      }
     case 'event':
       return applyEvent(data, action.event)
     case 'segmentSaved':
       return { ...data, blocks: mergeSegments(data.blocks, [action.segment]) }
     case 'characterSaved':
       return { ...data, book: { ...data.book, characters: upsertCharacter(data.book.characters, action.character) } }
+    case 'momentSaved':
+      return { ...data, moments: mergeMoments(data.moments, data.blocks, [action.moment]) }
     case 'characterMerged':
       return mergeCharacterInto(data, action.id, action.into)
   }

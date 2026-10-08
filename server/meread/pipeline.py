@@ -1,6 +1,7 @@
-"""Background work for the pages the reader is on: tag spoken lines, design voices, generate clips.
+"""Background work for the pages the reader is on: tag spoken lines, design voices, generate clips, and when an
+image service is set, pick the moments to illustrate and draw them.
 
-Two workers each repeat one step: look in the database for the most useful next job inside the reader's
+Four workers each repeat one step: look in the database for the most useful next job inside the reader's
 focus, do it, record the result. Nothing is queued in memory, so a restart or a correction just changes what
 the next lookup finds.
 """
@@ -8,27 +9,39 @@ import logging
 import os
 import tempfile
 import threading
+import time
+from pathlib import Path
 
 import numpy as np
 import soundfile as sf
 
-from . import speech, tagger
+from . import images, scenes, speech, tagger
 from .segment import speakable
+from .store import illustrating
 
 log = logging.getLogger('meread')
 TAG_BATCH = 20
+SCENE_BATCH = 30
+# Seconds before asking again after the scene call failed, and after the image service did not answer.
+SCENE_RETRY = 60
+IMAGE_RETRY = 15
 CONTEXT_BLOCKS = 8
 MAX_FOCUS = 400
 SILENCE = 0.6, 24000
+WORKERS = 'tagger', 'scenes', 'speech', 'images'
+# What a drawing is claimed and landed through: table, state column, revision column, error column.
+PORTRAIT = 'character', 'portrait_state', 'portrait_rev', 'portrait_error'
+MOMENT = 'moment', 'image_state', 'image_rev', 'error'
 
 
 class Pipeline:
-    def __init__(self, store, engine, ask=tagger.ask, publish=lambda book_id, event: None):
-        self.store, self.engine, self.ask, self.publish = store, engine, ask, publish
+    def __init__(self, store, engine, ask=tagger.ask, draw=images.generate, publish=lambda book_id, event: None):
+        self.store, self.engine, self.ask, self.draw, self.publish = store, engine, ask, draw, publish
         self.focus = None
-        self.activity = {'tagger': None, 'speech': None}
-        self.idle = {'tagger': None, 'speech': None}
-        self.wake = {'tagger': threading.Event(), 'speech': threading.Event()}
+        self.activity = dict.fromkeys(WORKERS)
+        self.idle = dict.fromkeys(WORKERS)
+        self.wake = {name: threading.Event() for name in WORKERS}
+        self.retry_at = {}
         self.stop = threading.Event()
         self.threads = []
         self.llm_cwd = store.home / 'llm'
@@ -54,7 +67,7 @@ class Pipeline:
             event.set()
 
     def start(self):
-        for name, step in (('tagger', self.tag_step), ('speech', self.speech_step)):
+        for name, step in zip(WORKERS, (self.tag_step, self.scene_step, self.speech_step, self.image_step)):
             thread = threading.Thread(target=self._loop, args=(name, step), name=f'meread-{name}', daemon=True)
             thread.start()
             self.threads.append(thread)
@@ -88,6 +101,11 @@ class Pipeline:
 
     def _publish_cast(self, book_id):
         self.publish(book_id, {'type': 'characters', 'characters': self.store.characters(book_id)})
+
+    def _publish_moments(self, book_id, where, args=()):
+        moments = self.store.moments_where(where, args)
+        if moments:
+            self.publish(book_id, {'type': 'moments', 'moments': moments})
 
     # Tagging
 
@@ -144,6 +162,59 @@ class Pipeline:
         self.publish(book_id, {'type': 'blocks', 'blocks': states})
         self.idle['tagger'] = f'Tagging failed: {problem}' if problem else None
         self.wake['speech'].set()
+        self.wake['scenes'].set()
+        return True
+
+    # Moments to illustrate
+
+    def scene_step(self):
+        """Look for moments in the next run of unscanned paragraphs on the current and next page. The page before is
+        only ever context. Returns False when there is nothing to scan."""
+        focus = self.focus
+        settings = self.store.settings()
+        # The pause switch promises no Claude or Codex calls at all.
+        if not focus or not illustrating(settings) or settings['tagging_paused']:
+            self.idle['scenes'] = None
+            return False
+        if time.monotonic() < self.retry_at.get('scenes', 0):
+            return False
+        book_id = focus['book_id']
+        pending = self.store.all(
+            "SELECT id, idx, tag_state FROM block WHERE book_id = ? AND idx BETWEEN ? AND ? AND scene_state = 'pending' "
+            'ORDER BY idx LIMIT ?', (book_id, focus['current_first'], focus['last'], SCENE_BATCH))
+        batch = [b for n, b in enumerate(pending) if b['idx'] == pending[0]['idx'] + n]
+        # The cast of a paragraph is only known once its lines are tagged, and scanning around the gaps would
+        # spend a call on every few paragraphs.
+        if not batch or any(b['tag_state'] in ('pending', 'tagging') for b in batch):
+            return False
+        start, ids = batch[0]['idx'], [b['id'] for b in batch]
+        marks = ','.join('?' * len(ids))
+        self.store.run(f"UPDATE block SET scene_state = 'scanning' WHERE id IN ({marks})", ids)
+        book = self.store.one('SELECT title, author, language FROM book WHERE id = ?', (book_id,))
+        self._say('scenes', f"Asking {settings['provider']} for moments to draw in {len(batch)} paragraphs")
+        last = self.store.one('SELECT kind, scene, block_idx FROM moment WHERE book_id = ? AND block_idx < ? '
+                              'ORDER BY block_idx DESC LIMIT 1', (book_id, start))
+        prompt, markers = scenes.build_prompt(
+            book, self.store.characters(book_id), last,
+            self.store.blocks(book_id, start - CONTEXT_BLOCKS, start - 1),
+            self.store.blocks(book_id, start, batch[-1]['idx']),
+            settings['pictures_per_page'], max(1, focus['current_last'] - focus['current_first'] + 1))
+        try:
+            answer, cost = self.ask(settings, prompt, self.llm_cwd, system=scenes.SYSTEM, schema=scenes.SCHEMA)
+            self.store.record_usage(settings['provider'], settings[f"{settings['provider']}_model"], len(batch), cost)
+            # The scan covers two pages.
+            created = scenes.apply(self.store, book_id, markers, answer, settings['pictures_per_page'] * 2)
+        except tagger.TaggerError as e:
+            log.warning('looking for moments failed: %s', e)
+            self.store.run(f"UPDATE block SET scene_state = 'pending' WHERE scene_state = 'scanning' AND id IN ({marks})", ids)
+            self.idle['scenes'] = f'Looking for moments to draw failed: {e}'
+            self.retry_at['scenes'] = time.monotonic() + SCENE_RETRY
+            return False
+        self.store.run(f"UPDATE block SET scene_state = 'done' WHERE scene_state = 'scanning' AND id IN ({marks})", ids)
+        self.idle['scenes'] = None
+        self._publish_cast(book_id)
+        self._publish_moments(book_id, f"m.id IN ({','.join('?' * len(created))})", created)
+        self.wake['images'].set()
         return True
 
     # Voices and clips
@@ -265,3 +336,151 @@ class Pipeline:
             self.store.run("UPDATE segment SET audio_state = 'failed', error = ? WHERE id = ? AND audio_rev = ? "
                            "AND audio_state = 'generating'", (str(e)[:300], *claim))
         self._publish_segments(book_id, 'id = ?', (seg['id'],))
+
+    def find_appearance(self, character):
+        """Ask how a character looks from every paragraph of the book about them, and save it. Raises TaggerError."""
+        book_id, settings = character['book_id'], self.store.settings()
+        book = self.store.one('SELECT title, author, language FROM book WHERE id = ?', (book_id,))
+        text, spoken = {}, set()
+        for seg in self.store.all('SELECT block_idx, text, character_id FROM segment WHERE book_id = ? '
+                                  'ORDER BY block_idx, seq', (book_id,)):
+            text[seg['block_idx']] = text.get(seg['block_idx'], '') + seg['text']
+            if seg['character_id'] == character['id']:
+                spoken.add(seg['block_idx'])
+        paragraphs = scenes.mentioning(text.items(), character['name'], spoken)
+        if not paragraphs:
+            raise tagger.TaggerError(f"the book never mentions {character['name']}")
+        answer, cost = self.ask(settings, scenes.look_prompt(book, character, paragraphs), self.llm_cwd,
+                                system=scenes.LOOK_SYSTEM, schema=scenes.LOOK_SCHEMA)
+        self.store.record_usage(settings['provider'], settings[f"{settings['provider']}_model"], len(paragraphs), cost)
+        appearance = scenes.look_from(answer)
+        if not appearance:
+            raise tagger.TaggerError('the answer described nothing')
+        return self.store.update_character(character['id'], {'appearance': appearance})
+
+    def star(self, block):
+        """Have the picture of a paragraph drawn whatever the page limit says, asking what it shows when it has none.
+        Returns the moment. Raises TaggerError."""
+        book_id, idx, settings = block['book_id'], block['idx'], self.store.settings()
+        star = "UPDATE moment SET starred = 1, wanted = 1 WHERE block_id = ? AND kind = 'picture'", (block['id'],)
+        if not self.store.run(*star).rowcount:
+            book = self.store.one('SELECT title, author, language FROM book WHERE id = ?', (book_id,))
+            prompt, markers = scenes.star_prompt(book, self.store.characters(book_id),
+                                                 self.store.blocks(book_id, idx - CONTEXT_BLOCKS, idx - 1),
+                                                 self.store.blocks(book_id, idx, idx)[0])
+            answer, cost = self.ask(settings, prompt, self.llm_cwd, system=scenes.STAR_SYSTEM, schema=scenes.SCHEMA)
+            self.store.record_usage(settings['provider'], settings[f"{settings['provider']}_model"], 1, cost)
+            # In one transaction, so that an answer with nothing to draw leaves the end of the last picture in place.
+            with self.store.lock:
+                starred = 0
+                self.store.run('BEGIN')
+                try:
+                    self.store.run("DELETE FROM moment WHERE block_id = ? AND kind = 'clear'", (block['id'],))
+                    scenes.apply(self.store, book_id, markers, {**answer, 'ends': []}, 1)
+                    starred = self.store.run(*star).rowcount
+                finally:
+                    self.store.run('COMMIT' if starred else 'ROLLBACK')
+            if not starred:
+                raise tagger.TaggerError('the answer described nothing to draw in this paragraph')
+        self.store.redraw_moments("m.block_id = ? AND m.image_state = 'failed'", (block['id'],))
+        return self.store.moments_where('m.block_id = ?', (block['id'],))[0]
+
+    # Pictures
+
+    def image_step(self):
+        """Draw the next missing picture: one the reader starred, else one on the current or next page. The portrait
+        of someone in it is drawn first when needed."""
+        focus = self.focus
+        settings = self.store.settings()
+        if not focus or not illustrating(settings):
+            self.idle['images'] = None
+            return False
+        if time.monotonic() < self.retry_at.get('images', 0):
+            return False
+        book_id = focus['book_id']
+        problem = self._draw_next(book_id, focus, settings)
+        if problem is None:
+            return False
+        if problem:
+            self.idle['images'] = f'The image service {problem}; trying again shortly'
+            self.retry_at['images'] = time.monotonic() + IMAGE_RETRY
+            return False
+        self.idle['images'] = None
+        return True
+
+    def _draw_next(self, book_id, focus, settings):
+        """None when nothing needs drawing, otherwise what kept the image service from answering ('' when it answered)."""
+        url = settings['image_url']
+        # A starred picture is drawn wherever it is in the book, and takes none of its page's places.
+        starred = self.store.one("SELECT id, scene, image_state, image_rev FROM moment WHERE book_id = ? AND starred "
+                                 "AND kind = 'picture' AND image_state = 'none' ORDER BY id LIMIT 1", (book_id,))
+        if starred:
+            return self._draw_scene(book_id, starred, url)
+        pages = (focus['current_first'], focus['current_last']), (focus['current_last'] + 1, focus['last'])
+        counted = [self.store.all("SELECT id, scene, image_state, image_rev FROM moment WHERE book_id = ? "
+                                  "AND kind = 'picture' AND NOT starred AND block_idx BETWEEN ? AND ? ORDER BY block_idx LIMIT ?",
+                                  (book_id, first, last, settings['pictures_per_page'])) for first, last in pages]
+        ids = [m['id'] for page in counted for m in page]
+        self.store.run(f"UPDATE moment SET wanted = 1 WHERE wanted = 0 AND id IN ({','.join('?' * len(ids))})", ids)
+        # The picture on screen now is the last one behind the reader, when the page was turned before it was drawn
+        # too. Nothing else behind the reader is drawn, and nothing is carried into a new chapter.
+        carried = self.store.one(
+            "SELECT id, kind, scene, image_state, image_rev FROM moment WHERE book_id = ? AND block_idx < ? "
+            "AND block_idx >= (SELECT MAX(first_block) FROM chapter WHERE book_id = ? AND first_block <= ?) "
+            "AND (kind = 'clear' OR wanted) ORDER BY block_idx DESC LIMIT 1",
+            (book_id, focus['current_first'], book_id, focus['current_first']))
+        shown = [carried] if carried and carried['kind'] == 'picture' else []
+        moment = next((m for m in shown + counted[0] + counted[1] if m['image_state'] == 'none'), None)
+        if moment:
+            return self._draw_scene(book_id, moment, url)
+        undrawn = self.store.one(
+            "SELECT id, book_id, name, gender, age, appearance, portrait_rev FROM character WHERE book_id = ? "
+            "AND role != 'narrator' AND appearance != '' AND portrait_state = 'none' ORDER BY id LIMIT 1", (book_id,))
+        return self.draw_portrait(undrawn, url) if undrawn else None
+
+    def _draw_scene(self, book_id, moment, url):
+        """Draw a moment, or first the missing portrait of someone in it."""
+        present = self.store.all(
+            "SELECT c.id, c.book_id, c.name, c.gender, c.age, c.appearance, c.portrait_state, c.portrait_rev "
+            "FROM moment_character mc JOIN character c ON c.id = mc.character_id "
+            "WHERE mc.moment_id = ? AND c.role != 'narrator' ORDER BY mc.pos LIMIT ?", (moment['id'], scenes.MAX_CHARACTERS))
+        undrawn = next((c for c in present if c['appearance'] and c['portrait_state'] == 'none'), None)
+        return self.draw_portrait(undrawn, url) if undrawn else self.draw_moment(book_id, moment, present, url)
+
+    def draw_portrait(self, character, url):
+        return self._draw(PORTRAIT, character['id'], character['portrait_rev'], self.store.portrait_path(character),
+                          f"Drawing {character['name']}", lambda: self._publish_cast(character['book_id']),
+                          url, images.portrait_prompt(character), images.PORTRAIT_SIZE)
+
+    def draw_moment(self, book_id, moment, present, url):
+        ready = [c for c in present if c['portrait_state'] == 'ready' and self.store.portrait_path(c).exists()]
+        described = [(c['name'], c['appearance']) for c in present if c not in ready and c['appearance']]
+        return self._draw(MOMENT, moment['id'], moment['image_rev'], self.store.moment_path(book_id, moment['id']),
+                          'Drawing the scene', lambda: self._publish_moments(book_id, 'm.id = ?', (moment['id'],)),
+                          url, images.scene_prompt(moment['scene'], [c['name'] for c in ready], described), images.SCENE_SIZE,
+                          [self.store.portrait_path(c).read_bytes() for c in ready])
+
+    def _draw(self, kind, row_id, rev, target, saying, announce, url, prompt, size, references=()):
+        table, state, revision, error = kind
+        claim = f'id = ? AND {revision} = ?', (row_id, rev)
+
+        def move(before, after, problem=None):
+            return self.store.run(f"UPDATE {table} SET {state} = ?, {error} = ? WHERE {claim[0]} AND {state} = ?",
+                                  (after, problem, *claim[1], before)).rowcount
+        if not move('none', 'drawing'):
+            return ''
+        announce()
+        self._say('images', saying)
+        unavailable = ''
+        try:
+            png = self.draw(url, prompt, *size, row_id * 1000 + rev, references)
+            self._land(lambda tmp: Path(tmp).write_bytes(png), target, lambda: move('drawing', 'ready'))
+        except images.Unavailable as e:
+            log.warning('the image service %s', e)
+            move('drawing', 'none')
+            unavailable = str(e)
+        except Exception as e:
+            log.exception('drawing failed for %s %s', table, row_id)
+            move('drawing', 'failed', str(e)[:300])
+        announce()
+        return unavailable

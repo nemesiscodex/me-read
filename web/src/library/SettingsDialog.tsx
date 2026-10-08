@@ -43,7 +43,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   return (
     <dialog className="dialog" ref={dialog} onClose={onClose}>
       <form onSubmit={save}>
-        <h2>Tagger settings</h2>
+        <h2>Settings</h2>
         <p className="dialog-lead">The tagger reads each paragraph and decides which character says each line.</p>
 
         {settings && (
@@ -70,6 +70,44 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                 </label>
               </div>
             ))}
+          </div>
+        )}
+        {settings && (
+          <div className="illustration-settings">
+            <label className="field">
+              <span>Image service URL</span>
+              <input
+                type="text"
+                value={settings.image_url}
+                spellCheck={false}
+                placeholder="http://192.168.1.20:8000"
+                onChange={(event) => setSettings({ ...settings, image_url: event.target.value })}
+              />
+            </label>
+            <label className="provider-choice">
+              <input
+                type="checkbox"
+                checked={settings.illustrations}
+                disabled={settings.image_url.trim() === ''}
+                onChange={(event) => setSettings({ ...settings, illustrations: event.target.checked })}
+              />
+              Draw pictures
+            </label>
+            <label className="field field-wide">
+              <span>Pictures a page</span>
+              <select
+                value={settings.pictures_per_page}
+                onChange={(event) => setSettings({ ...settings, pictures_per_page: Number(event.target.value) })}
+              >
+                {[1, 2, 3, 4].map((count) => (
+                  <option key={count}>{count}</option>
+                ))}
+              </select>
+            </label>
+            <p className="field-help">
+              Enables illustrations of key moments while you read. Enter the address of the image service from
+              imager/, or leave it empty for none.
+            </p>
           </div>
         )}
         {!settings && !problem && <p>Loading…</p>}

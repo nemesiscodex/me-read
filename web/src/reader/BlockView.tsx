@@ -11,14 +11,23 @@ interface Props {
   /** Set only on the block that holds the player's segment, so other blocks skip re-rendering. */
   activeId: number | null
   activeMode: ActiveMode | null
+  /** Set when reaching this paragraph brings up a new picture: whether that picture is drawn yet. */
+  picture: 'ready' | 'coming' | null
+  /** The reader asked for that picture by hand. */
+  starred: boolean
 }
 
 export const hueStyle = (characterId: number) => ({ '--h': characterHue(characterId) }) as CSSProperties
 
-export const BlockView = memo(function BlockView({ block, narratorId, activeId, activeMode }: Props) {
+export const BlockView = memo(function BlockView({ block, narratorId, activeId, activeMode, picture, starred }: Props) {
   const Tag = block.tag === 'h' ? 'h2' : 'p'
   return (
-    <Tag className={block.tag === 'h' ? 'block heading' : 'block'} data-block={block.idx}>
+    <Tag
+      className={block.tag === 'h' ? 'block heading' : 'block'}
+      data-block={block.idx}
+      data-picture={picture ?? undefined}
+      data-starred={starred || undefined}
+    >
       {block.segments.map((segment) => {
         const voiced = segment.character_id !== null && segment.character_id !== narratorId
         return (

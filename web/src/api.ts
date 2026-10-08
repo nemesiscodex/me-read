@@ -8,6 +8,7 @@ export type VoiceState = 'none' | 'designing' | 'ready' | 'failed'
 export type TagState = 'pending' | 'tagging' | 'tagged' | 'failed'
 export type AudioState = 'none' | 'generating' | 'ready' | 'failed'
 export type DraftState = 'none' | 'queued' | 'designing' | 'ready' | 'failed'
+export type DrawState = 'none' | 'drawing' | 'ready' | 'failed'
 export type Provider = 'claude' | 'codex'
 
 export interface Character {
@@ -26,7 +27,30 @@ export interface Character {
   /** A candidate voice sample being auditioned. The current voice stays in use until the candidate is approved. */
   draft_state: DraftState
   draft_rev: number
+  /** How the character looks, in words. The portrait is drawn from it, and drawn again whenever it changes. */
+  appearance: string
+  portrait_state: DrawState
+  portrait_rev: number
+  portrait_error: string | null
   line_count: number
+}
+
+/** A paragraph where the picture changes: a new one is shown, or with kind 'clear' the last one is taken down. */
+export interface Moment {
+  id: number
+  block_id: number
+  /** `Block.idx` of the paragraph. */
+  block_idx: number
+  kind: 'picture' | 'clear'
+  /** What the picture shows. Empty for a clear. */
+  scene: string
+  /** The characters in the picture, most important first. */
+  character_ids: number[]
+  image_state: DrawState
+  image_rev: number
+  error: string | null
+  /** The reader asked for this picture by hand. It is drawn wherever it is and takes none of its page's places. */
+  starred: boolean
 }
 
 export interface Segment {
@@ -84,6 +108,12 @@ export interface Settings {
   codex_model: string
   /** While true the server makes no Claude or Codex calls, and the narrator reads lines that have no speaker yet. */
   tagging_paused: boolean
+  /** Where the image service answers. Empty when there is none. */
+  image_url: string
+  /** The reader's switch. Moments are only looked for and drawn while it is on and `image_url` is set. */
+  illustrations: boolean
+  /** How many pictures of one page count, 1 to 4. Starred pictures come on top. */
+  pictures_per_page: number
 }
 
 export interface UsageTotals {
@@ -104,6 +134,7 @@ export interface CharacterInput {
   age: Age
   pitch: Pitch
   description: string
+  appearance: string
 }
 
 /** Block positions (Block.idx) the reader is showing. The server prepares `first..last`, starting from `current_first`. */
@@ -118,7 +149,8 @@ export type ServerEvent =
   | { type: 'segments'; segments: Segment[] }
   | { type: 'blocks'; blocks: { id: number; tag_state: TagState }[] }
   | { type: 'characters'; characters: Character[] }
-  | { type: 'activity'; tagger: string | null; speech: string | null }
+  | { type: 'moments'; moments: Moment[] }
+  | { type: 'activity'; tagger: string | null; scenes: string | null; speech: string | null; images: string | null }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init)
@@ -147,6 +179,11 @@ export const api = {
   deleteBook: (id: number) => request<void>(`/api/books/${id}`, { method: 'DELETE' }),
   getBook: (id: number) => request<BookDetail>(`/api/books/${id}`),
   getChapter: (bookId: number, chapter: number) => request<Block[]>(`/api/books/${bookId}/chapters/${chapter}`),
+  getMoments: (bookId: number, chapter: number) => request<Moment[]>(`/api/books/${bookId}/chapters/${chapter}/moments`),
+  /** Draw the picture of a moment again with a new seed. */
+  redrawMoment: (id: number) => request<Moment>(`/api/moments/${id}/redraw`, json('POST')),
+  /** Have a picture of this paragraph drawn. One Claude or Codex call when the paragraph has no picture yet. */
+  starBlock: (blockId: number) => request<Moment>(`/api/blocks/${blockId}/star`, json('POST')),
   /** `position` is saved as where to open the book next time. */
   setFocus: (bookId: number, focus: Focus, position: Place | null) =>
     request<void>(`/api/books/${bookId}/focus`, json('POST', { ...focus, position })),
@@ -161,7 +198,7 @@ export const api = {
 
   createCharacter: (bookId: number, input: CharacterInput) =>
     request<Character>(`/api/books/${bookId}/characters`, json('POST', input)),
-  /** Saves the description. The voice only changes when a candidate is approved or a recording is uploaded. */
+  /** Saves the description. The voice only changes when a candidate is approved or a recording is uploaded; a new appearance redraws the portrait. */
   updateCharacter: (id: number, input: Partial<CharacterInput>) =>
     request<Character>(`/api/characters/${id}`, json('PATCH', input)),
   /** Design a candidate sample from the character's current description. Calling it again makes a different one. */
@@ -170,6 +207,10 @@ export const api = {
   /** Make the candidate the character's voice. Their lines are read again in it. */
   approveDraft: (id: number) => request<Character>(`/api/characters/${id}/voice/draft/approve`, json('POST')),
   uploadVoice: (id: number, file: File) => request<Character>(`/api/characters/${id}/voice`, upload(file)),
+  /** Draw the portrait again with a new seed, and the pictures the character is in. */
+  redrawPortrait: (id: number) => request<Character>(`/api/characters/${id}/portrait/redraw`, json('POST')),
+  /** One Claude or Codex call over every paragraph of the book about the character. Replaces the appearance. */
+  findAppearance: (id: number) => request<Character>(`/api/characters/${id}/appearance/find`, json('POST')),
   /** Move every line of `id` to `into`, then delete `id`. */
   mergeCharacter: (id: number, into: number) => request<void>(`/api/characters/${id}/merge`, json('POST', { into })),
 
@@ -180,6 +221,8 @@ export const api = {
   audioUrl: (segment: Segment) => `/api/segments/${segment.id}/audio?v=${segment.audio_rev}`,
   voiceUrl: (character: Character) => `/api/characters/${character.id}/voice?v=${character.voice_rev}`,
   draftUrl: (character: Character) => `/api/characters/${character.id}/voice/draft?v=${character.draft_rev}`,
+  portraitUrl: (character: Character) => `/api/characters/${character.id}/portrait?v=${character.portrait_rev}`,
+  momentUrl: (moment: Moment) => `/api/moments/${moment.id}/image?v=${moment.image_rev}`,
   /** Server-sent stream of ServerEvent for one book. */
   events: (bookId: number) => new EventSource(`/api/books/${bookId}/events`),
 }

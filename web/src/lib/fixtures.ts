@@ -1,4 +1,4 @@
-import type { Block, Character, Segment } from '../api'
+import type { Block, Character, Moment, Segment } from '../api'
 
 export function segment(id: number, patch: Partial<Segment> = {}): Segment {
   return {
@@ -42,8 +42,29 @@ export function character(id: number, patch: Partial<Character> = {}): Character
     voice_rev: 1,
     draft_state: 'none',
     draft_rev: 0,
+    appearance: '',
+    portrait_state: 'none',
+    portrait_rev: 0,
+    portrait_error: null,
     error: null,
     line_count: 0,
+    ...patch,
+  }
+}
+
+/** A drawn picture on the block with the same number. */
+export function moment(id: number, patch: Partial<Moment> = {}): Moment {
+  return {
+    id,
+    block_id: id,
+    block_idx: id,
+    kind: 'picture',
+    scene: `Scene ${id}`,
+    character_ids: [],
+    image_state: 'ready',
+    image_rev: 0,
+    error: null,
+    starred: false,
     ...patch,
   }
 }
