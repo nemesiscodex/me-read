@@ -36,11 +36,13 @@ class Pipeline:
 
     # Control
 
-    def set_focus(self, book_id, first, last, current_first, current_last):
+    def set_focus(self, book_id, first, last, current_first, current_last, position=None):
         first, last = max(0, first), min(last, first + MAX_FOCUS)
         self.focus = {'book_id': book_id, 'first': first, 'last': last,
                       'current_first': min(max(current_first, first), last), 'current_last': current_last}
-        self.store.run('UPDATE book SET position_block = ? WHERE id = ?', (self.focus['current_first'], book_id))
+        # The line at the top of the page. Without one, the first paragraph on the page stands in.
+        block, seq = position or (self.focus['current_first'], 0)
+        self.store.run('UPDATE book SET position_block = ?, position_seq = ? WHERE id = ?', (block, seq, book_id))
         self.nudge()
 
     def forget(self, book_id):

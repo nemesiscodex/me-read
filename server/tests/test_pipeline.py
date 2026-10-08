@@ -288,3 +288,10 @@ def test_a_spanish_book_is_tagged_and_spoken_in_spanish(world):
     assert world.engine.languages == {'es'}
     said = [text for text, _, _ in world.engine.spoken]
     assert '¿Quién anda ahí?' in said and 'gritó un guardia desde lo alto.' in said and 'Vuelve antes de que anochezca.' in said
+
+
+def test_the_line_at_the_top_of_the_page_is_where_the_book_opens_again(world):
+    body = {'first': 0, 'last': 5, 'current_first': 2, 'current_last': 5, 'position': {'block': 3, 'seq': 1}}
+    assert world.client.post(f"/api/books/{world.book['id']}/focus", json=body).status_code == 204
+    book = world.client.get(f"/api/books/{world.book['id']}").json()
+    assert (book['position_block'], book['position_seq']) == (3, 1)

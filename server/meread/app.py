@@ -44,11 +44,17 @@ class SettingsChanges(BaseModel):
     tagging_paused: Optional[bool] = None
 
 
+class Place(BaseModel):
+    block: int
+    seq: int
+
+
 class Focus(BaseModel):
     first: int
     last: int
     current_first: int
     current_last: int
+    position: Place | None = None
 
 
 class Speaker(BaseModel):
@@ -138,7 +144,7 @@ def create_app(home, engine=None, ask=None, web_dir=None, run_workers=True):
             except epub.EpubError as e:
                 raise HTTPException(400, str(e))
         book = store.book(store.add_book(parsed))
-        return {k: book[k] for k in ('id', 'title', 'author', 'block_count', 'position_block', 'language')}
+        return {k: book[k] for k in ('id', 'title', 'author', 'block_count', 'position_block', 'position_seq', 'language')}
 
     @app.delete('/api/books/{book_id}', status_code=204)
     def delete_book(book_id: int):
@@ -162,7 +168,8 @@ def create_app(home, engine=None, ask=None, web_dir=None, run_workers=True):
         found(store.book(book_id), 'book')
         if focus.last < focus.first:
             raise HTTPException(422, 'last is before first')
-        pipeline.set_focus(book_id, focus.first, focus.last, focus.current_first, focus.current_last)
+        position = focus.position and (focus.position.block, focus.position.seq)
+        pipeline.set_focus(book_id, focus.first, focus.last, focus.current_first, focus.current_last, position)
 
     @app.get('/api/books/{book_id}/events')
     async def events(book_id: int):

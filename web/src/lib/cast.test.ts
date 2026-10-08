@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { changedFields, characterHue, inputOf, narratorOf, sortCast } from './cast'
 import { character } from './fixtures'
-import { parseRoute } from './route'
+import { bookHref, parseRoute } from './route'
 
 describe('characterHue', () => {
   it('gives the same id the same hue every time, inside the colour wheel', () => {
@@ -49,11 +49,19 @@ describe('cast', () => {
 
 describe('parseRoute', () => {
   it('opens a book by the id in the hash', () => {
-    expect(parseRoute('#/book/12')).toEqual({ screen: 'reader', bookId: 12 })
+    expect(parseRoute('#/book/12')).toEqual({ screen: 'reader', bookId: 12, place: null })
+  })
+
+  it('reads the line to open at, and writes it back the same way', () => {
+    expect(parseRoute('#/book/12/p/153.4')).toEqual({ screen: 'reader', bookId: 12, place: { block: 153, seq: 4 } })
+    expect(parseRoute('#/book/12/p/153')).toEqual({ screen: 'reader', bookId: 12, place: { block: 153, seq: 0 } })
+    expect(bookHref(12, { block: 153, seq: 4 })).toBe('#/book/12/p/153.4')
+    expect(bookHref(12, { block: 153, seq: 0 })).toBe('#/book/12/p/153')
+    expect(bookHref(12)).toBe('#/book/12')
   })
 
   it('shows the library for anything else', () => {
-    for (const hash of ['', '#/', '#/book/', '#/book/abc', '#/book/3/extra']) {
+    for (const hash of ['', '#/', '#/book/', '#/book/abc', '#/book/3/extra', '#/book/3/p/']) {
       expect(parseRoute(hash)).toEqual({ screen: 'library' })
     }
   })

@@ -3,12 +3,12 @@ import { api, type Character, type ServerEvent } from '../api'
 import { TaggerSwitch } from './TaggerSwitch'
 import { Icon } from '../Icon'
 import { characterHue, narratorOf } from '../lib/cast'
-import { chapterContaining, focusFor, layoutFor, type Anchor } from '../lib/pages'
+import { anchorAt, chapterContaining, focusFor, layoutFor, placeOf, type Anchor, type Place } from '../lib/pages'
 import { activeSegmentId } from '../lib/player'
 import { FONT_SIZE, SPEED, useNumberPref } from '../lib/prefs'
 import { readerReducer } from '../lib/readerState'
 import { loadPauses, pausesAfter, savePauses, type Pauses } from '../lib/pauses'
-import { libraryHref } from '../lib/route'
+import { bookHref, libraryHref } from '../lib/route'
 import { indexSegments, isUntagged, playItems, segmentStatus, type SegmentStatus } from '../lib/segments'
 import { BlockView, segmentIdAt, type ActiveMode } from './BlockView'
 import { CastPanel } from './CastPanel'
@@ -53,7 +53,7 @@ function isTyping(target: EventTarget | null): boolean {
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
-export function Reader({ bookId }: { bookId: number }) {
+export function Reader({ bookId, place }: { bookId: number; place: Place | null }) {
   const [data, dispatch] = useReducer(readerReducer, null)
   const [openError, setOpenError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -105,12 +105,12 @@ export function Reader({ bookId }: { bookId: number }) {
 
   const requests = useRef(0)
   const loadChapter = useCallback(
-    async (chapterIndex: number, anchor: Anchor | null): Promise<boolean> => {
+    async (chapterIndex: number, land: Anchor | Place | null): Promise<boolean> => {
       const request = ++requests.current
       try {
         const loaded = await api.getChapter(bookId, chapterIndex)
         if (request !== requests.current) return false
-        if (anchor) setAnchor(anchor)
+        if (land) setAnchor('kind' in land ? land : anchorAt(loaded, land))
         dispatch({ type: 'chapterLoaded', chapterIndex, blocks: loaded })
         return true
       } catch (error) {
@@ -121,15 +121,26 @@ export function Reader({ bookId }: { bookId: number }) {
     [bookId, setAnchor],
   )
 
+  // The place in the address this reader has gone to. Turning pages rewrites the address without
+  // telling React, so `place` only changes when the address is edited or the history is walked.
+  const followed = useRef(place)
+  useEffect(() => {
+    if (!place || (place.block === followed.current?.block && place.seq === followed.current.seq)) return
+    followed.current = place
+    const target = chapterContaining(chapters, place.block)
+    if (target) void loadChapter(target.index, place)
+  })
+
   useEffect(() => {
     let alive = true
     const open = async () => {
       const book = await api.getBook(bookId)
-      const first = chapterContaining(book.chapters, book.position_block)
+      const start = followed.current ?? { block: book.position_block, seq: book.position_seq }
+      const first = chapterContaining(book.chapters, start.block)
       if (!first) throw new Error('This book has no chapters.')
       const loaded = await api.getChapter(bookId, first.index)
       if (!alive) return
-      setAnchor({ kind: 'block', idx: book.position_block })
+      setAnchor(anchorAt(loaded, start))
       dispatch({ type: 'opened', book, chapterIndex: first.index, blocks: loaded })
     }
     open().catch((error) => alive && setOpenError(messageOf(error)))
@@ -195,7 +206,16 @@ export function Reader({ bookId }: { bookId: number }) {
 
   useEffect(() => {
     if (activeId !== null) showSegment(activeId)
-  }, [activeId, loadSeq, showSegment])
+  }, [activeId, loadSeq, layout, showSegment])
+
+  const here = useRef<Place | null>(null)
+  useEffect(() => {
+    const at = placeOf(blocks ?? [], currentAnchor())
+    if (!at) return
+    here.current = at
+    const href = bookHref(bookId, at)
+    if (window.location.hash !== href) window.history.replaceState(null, '', href)
+  }, [bookId, blocks, currentAnchor, pagination.page, pagination.spans])
 
   const bookBlockCount = data?.book.block_count ?? 0
   const focus = useMemo(
@@ -210,7 +230,7 @@ export function Reader({ bookId }: { bookId: number }) {
   useEffect(() => {
     if (focusKey === null) return
     const timer = window.setTimeout(() => {
-      if (focusRef.current) api.setFocus(bookId, focusRef.current).catch(() => {})
+      if (focusRef.current) api.setFocus(bookId, focusRef.current, here.current).catch(() => {})
     }, FOCUS_DEBOUNCE_MS)
     return () => window.clearTimeout(timer)
   }, [bookId, focusKey])

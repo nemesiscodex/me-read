@@ -1,4 +1,4 @@
-import type { Chapter, Focus } from '../api'
+import type { Block, Chapter, Focus } from '../api'
 
 /** One screenful: one or two text columns of equal width. */
 export interface PageLayout {
@@ -19,6 +19,27 @@ export interface BlockSpan {
 
 /** What the reader keeps in view when the layout or the chapter changes. */
 export type Anchor = { kind: 'start' } | { kind: 'end' } | { kind: 'block'; idx: number } | { kind: 'segment'; id: number }
+
+/** A line of the book, named so that it survives a reload: `Block.idx` and `Segment.seq`. */
+export interface Place {
+  block: number
+  seq: number
+}
+
+export function anchorAt(blocks: Block[], place: Place): Anchor {
+  const segment = blocks.find((b) => b.idx === place.block)?.segments.find((s) => s.seq === place.seq)
+  return segment ? { kind: 'segment', id: segment.id } : { kind: 'block', idx: place.block }
+}
+
+export function placeOf(blocks: Block[], anchor: Anchor): Place | null {
+  if (anchor.kind === 'block') return { block: anchor.idx, seq: 0 }
+  if (anchor.kind !== 'segment') return null
+  for (const block of blocks) {
+    const segment = block.segments.find((s) => s.id === anchor.id)
+    if (segment) return { block: block.idx, seq: segment.seq }
+  }
+  return null
+}
 
 const MAX_MEASURE_EM = 34
 const MIN_SPREAD_MEASURE_EM = 24
