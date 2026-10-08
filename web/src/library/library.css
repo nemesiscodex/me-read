@@ -1,0 +1,140 @@
+.library {
+  min-height: 100%;
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: clamp(1.5rem, 6vh, 4rem) 1.5rem 4rem;
+}
+
+.library-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: clamp(1.5rem, 5vh, 3rem);
+}
+
+.wordmark {
+  font-family: var(--serif);
+  font-size: 2.4rem;
+  font-style: italic;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
+.library-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.library-problem {
+  margin-bottom: 1rem;
+  color: var(--danger);
+}
+
+.library-adding {
+  margin-bottom: 1rem;
+  color: var(--ink-soft);
+}
+
+.library-empty {
+  max-width: 30rem;
+  color: var(--ink-soft);
+  line-height: 1.6;
+}
+
+.library-empty-lead {
+  margin-bottom: 0.4rem;
+  font-family: var(--serif);
+  font-size: 1.6rem;
+  color: var(--ink);
+}
+
+.shelf-item {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  border-top: 1px solid var(--rule);
+}
+
+.shelf-item:last-child {
+  border-bottom: 1px solid var(--rule);
+}
+
+.shelf-book {
+  display: grid;
+  flex: 1;
+  gap: 0.15rem;
+  min-width: 0;
+  padding: 1.1rem 0 1rem;
+  text-decoration: none;
+}
+
+.shelf-title {
+  font-family: var(--serif);
+  font-size: 1.55rem;
+  line-height: 1.2;
+  text-wrap: balance;
+}
+
+.shelf-book:hover .shelf-title {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+}
+
+.shelf-author {
+  color: var(--ink-soft);
+}
+
+.shelf-progress {
+  display: block;
+  width: 9rem;
+  height: 2px;
+  margin-top: 0.55rem;
+  background: var(--rule);
+}
+
+.shelf-progress > span {
+  display: block;
+  height: 100%;
+  background: var(--ink);
+}
+
+.shelf-delete {
+  opacity: 0;
+}
+
+.shelf-item:hover .shelf-delete,
+.shelf-delete:focus-visible {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .shelf-delete {
+    opacity: 1;
+  }
+}
+
+.shelf-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  color: var(--ink-soft);
+}
+
+.drop-veil {
+  position: fixed;
+  inset: 0.75rem;
+  display: grid;
+  place-items: center;
+  border: 2px dashed var(--ink-soft);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  font-family: var(--serif);
+  font-size: 1.6rem;
+  pointer-events: none;
+}

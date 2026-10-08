@@ -1,0 +1,272 @@
+:root {
+  color-scheme: light dark;
+
+  --paper: #eef0ea;
+  --paper-raised: #f8f9f5;
+  --ink: #1b2220;
+  --ink-soft: #55605b;
+  --ink-faint: #8f9892;
+  --rule: #d3d8cf;
+  --wash: rgb(27 34 32 / 0.07);
+  --playing: #ffe066;
+  --playing-ink: #1b2220;
+  --danger: #a83a2a;
+  --focus: #2f6f8f;
+  --shadow: 0 12px 40px rgb(27 34 32 / 0.16);
+  --speaker-l: 0.56;
+  --speaker-c: 0.15;
+
+  --serif: 'Iowan Old Style', 'Palatino Linotype', Palatino, 'Book Antiqua', 'URW Palladio L', Georgia, serif;
+  --sans: 'Avenir Next', Avenir, 'Segoe UI', system-ui, sans-serif;
+
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--ink);
+  background: var(--paper);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #14181a;
+    --paper-raised: #1c2124;
+    --ink: #d6dbd4;
+    --ink-soft: #98a29c;
+    --ink-faint: #5f6965;
+    --rule: #2b3236;
+    --wash: rgb(214 219 212 / 0.09);
+    --playing: #ecd05a;
+    --playing-ink: #14181a;
+    --danger: #e57a66;
+    --focus: #7fb8d6;
+    --shadow: 0 12px 40px rgb(0 0 0 / 0.5);
+    --speaker-l: 0.76;
+    --speaker-c: 0.13;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+h1,
+h2,
+h3,
+p,
+ul {
+  margin: 0;
+  padding: 0;
+}
+
+ul {
+  list-style: none;
+}
+
+a {
+  color: inherit;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.button,
+.quiet-button,
+.icon-button,
+.menu-button {
+  border: 0;
+  border-radius: 6px;
+  background: none;
+}
+
+.button {
+  padding: 0.5em 1em;
+  background: var(--ink);
+  color: var(--paper);
+  font-weight: 600;
+}
+
+.button.danger {
+  background: var(--danger);
+  color: #fff;
+}
+
+.quiet-button {
+  padding: 0.5em 0.75em;
+  color: var(--ink-soft);
+}
+
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  color: var(--ink-soft);
+  flex: none;
+}
+
+.menu-button {
+  display: block;
+  width: 100%;
+  padding: 0.5em 0.6em;
+  text-align: left;
+}
+
+.quiet-button:hover:not(:disabled),
+.icon-button:hover:not(:disabled),
+.menu-button:hover:not(:disabled) {
+  background: var(--wash);
+  color: var(--ink);
+}
+
+.field {
+  display: grid;
+  gap: 0.25em;
+  min-width: 0;
+}
+
+.field > span {
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+
+.field input,
+.field select,
+.field textarea {
+  width: 100%;
+  padding: 0.4em 0.55em;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--paper);
+  resize: vertical;
+}
+
+.character-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.field-wide {
+  grid-column: 1 / -1;
+}
+
+.row-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.9rem;
+}
+
+.swatch {
+  display: inline-block;
+  flex: none;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: oklch(var(--speaker-l) var(--speaker-c) var(--h, 0));
+}
+
+.swatch[data-neutral] {
+  background: none;
+  box-shadow: inset 0 0 0 1.5px var(--ink-faint);
+}
+
+.swatch-large {
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
+.dialog {
+  width: min(30rem, calc(100vw - 2rem));
+  padding: 1.5rem;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  background: var(--paper-raised);
+  color: var(--ink);
+  box-shadow: var(--shadow);
+}
+
+.dialog::backdrop {
+  background: rgb(0 0 0 / 0.35);
+}
+
+.dialog h2 {
+  font-family: var(--serif);
+  font-size: 1.5rem;
+  font-weight: 500;
+}
+
+.dialog-lead {
+  margin-top: 0.35rem;
+  color: var(--ink-soft);
+}
+
+.dialog-problem {
+  margin-top: 0.9rem;
+  color: var(--danger);
+}
+
+.provider-list {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1.25rem;
+}
+
+.provider {
+  display: grid;
+  grid-template-columns: 6.5rem minmax(0, 1fr);
+  align-items: end;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+}
+
+.provider[data-chosen] {
+  border-color: var(--ink);
+}
+
+.provider-choice {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  padding-bottom: 0.45em;
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
