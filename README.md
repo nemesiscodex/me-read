@@ -11,9 +11,10 @@ Everything runs on your Mac. Speaker tagging goes through your own Claude Code o
 Needs macOS on Apple Silicon, [uv](https://docs.astral.sh/uv/), pnpm, and a logged-in `claude` or `codex` CLI.
 
 ```sh
-cd web && pnpm install && pnpm build
-cd ../server && uv run python -m meread
+./start
 ```
+
+That builds the web app and starts the server that serves it. Arguments go to the server, for example `./start --port 9000`.
 
 Open http://127.0.0.1:8765 and drop an EPUB on the library.
 
