@@ -1,0 +1,27 @@
+.venv/
+__pycache__/
+.pytest_cache/
+node_modules/
+dist/
+*.tsbuildinfo
+.DS_Store
+# Private reading data and demo captures.
+/artifacts/
+/.audit/
+/showcase/
+/docs/media/
+/books/
+/samples/
+*.epub
+*.db
+*.db-*
+*.db.*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.wav
+*.flac
+*.mp3
+*.m4a
+*.audio
