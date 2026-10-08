@@ -9,6 +9,7 @@ const book: BookDetail = {
   author: 'Author',
   block_count: 2,
   position_block: 0,
+  position_seq: 0,
   language: 'en',
   chapters: [{ index: 0, title: 'One', first_block: 0, block_count: 2 }],
   characters: [character(1, { role: 'narrator', line_count: 10 }), character(2, { line_count: 3 }), character(3, { line_count: 2 })],

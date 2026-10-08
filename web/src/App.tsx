@@ -11,5 +11,5 @@ function subscribe(onChange: () => void) {
 export function App() {
   const hash = useSyncExternalStore(subscribe, () => window.location.hash)
   const route = parseRoute(hash)
-  return route.screen === 'reader' ? <Reader key={route.bookId} bookId={route.bookId} /> : <Library />
+  return route.screen === 'reader' ? <Reader key={route.bookId} bookId={route.bookId} place={route.place} /> : <Library />
 }

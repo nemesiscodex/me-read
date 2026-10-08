@@ -89,12 +89,14 @@ export function usePagination(layout: PageLayout | null, contentKey: string | nu
     if (!root || !layout || contentKey === null) return
     const spans = measureBlocks(root, layout.stride)
     const anchor = anchorRef.current
-    const wanted =
-      anchor.kind === 'segment'
-        ? (segmentPage(root, layout.stride, anchor.id) ?? live.current.page)
-        : pageForAnchor(anchor, spans)
+    let held: number | null = null
+    if (anchor.kind === 'segment') held = segmentPage(root, layout.stride, anchor.id)
+    else if (anchor.kind === 'block' && spans.some((span) => span.idx === anchor.idx)) held = pageForAnchor(anchor, spans)
+    const wanted = held ?? (anchor.kind === 'segment' ? live.current.page : pageForAnchor(anchor, spans))
     const page = Math.min(Math.max(0, wanted), pageCountOf(spans) - 1)
-    anchorRef.current = anchorAtTop(root, layout.stride, spans, page) ?? anchor
+    // A line that is laid out stays the anchor. Moving it to the top of the page would slip back a page
+    // every time two columns narrow to one, since the line may sit in the second column.
+    if (held === null) anchorRef.current = anchorAtTop(root, layout.stride, spans, page) ?? anchor
     live.current = { spans, page, stride: layout.stride }
     setState({ spans, page, animate: false })
   }, [layout, contentKey, fontPx])

@@ -1,3 +1,5 @@
+import type { Place } from './lib/pages'
+
 export type Gender = 'male' | 'female' | 'unknown'
 export type Age = 'child' | 'teen' | 'adult' | 'elderly'
 export type Pitch = 'low' | 'medium' | 'high'
@@ -65,6 +67,8 @@ export interface BookSummary {
   author: string
   block_count: number
   position_block: number
+  /** With `position_block`, the line at the top of the page last read: `Segment.seq` in that block. */
+  position_seq: number
   /** Two-letter code detected from the text: 'en' or 'es'. It picks the speech model and the sample voices' language. */
   language: string
 }
@@ -143,7 +147,9 @@ export const api = {
   deleteBook: (id: number) => request<void>(`/api/books/${id}`, { method: 'DELETE' }),
   getBook: (id: number) => request<BookDetail>(`/api/books/${id}`),
   getChapter: (bookId: number, chapter: number) => request<Block[]>(`/api/books/${bookId}/chapters/${chapter}`),
-  setFocus: (bookId: number, focus: Focus) => request<void>(`/api/books/${bookId}/focus`, json('POST', focus)),
+  /** `position` is saved as where to open the book next time. */
+  setFocus: (bookId: number, focus: Focus, position: Place | null) =>
+    request<void>(`/api/books/${bookId}/focus`, json('POST', { ...focus, position })),
 
   /** Assign a line to a character. Its audio is regenerated in the new voice. */
   setSpeaker: (segmentId: number, characterId: number) =>

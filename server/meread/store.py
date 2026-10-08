@@ -9,7 +9,7 @@ from . import epub, segment
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS book (
   id INTEGER PRIMARY KEY, title TEXT NOT NULL, author TEXT NOT NULL, block_count INTEGER NOT NULL,
-  position_block INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  position_block INTEGER NOT NULL DEFAULT 0, position_seq INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   language TEXT NOT NULL DEFAULT 'en');
 CREATE TABLE IF NOT EXISTS chapter (
   book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE, idx INTEGER NOT NULL, title TEXT NOT NULL,
@@ -50,7 +50,7 @@ FIELDS = ('name', 'gender', 'age', 'pitch', 'description')
 DEFAULT_SETTINGS = {'provider': 'claude', 'claude_model': 'claude-haiku-5-5', 'codex_model': 'gpt-6-luna',
                     'tagging_paused': False}
 # Columns added after the first release, for libraries created before them.
-ADDED_COLUMNS = {'book': {'language': "TEXT NOT NULL DEFAULT 'en'"}, 'character': {
+ADDED_COLUMNS = {'book': {'language': "TEXT NOT NULL DEFAULT 'en'", 'position_seq': 'INTEGER NOT NULL DEFAULT 0'}, 'character': {
     'draft_state': "TEXT NOT NULL DEFAULT 'none' CHECK (draft_state IN ('none', 'queued', 'designing', 'ready', 'failed'))",
     'draft_rev': 'INTEGER NOT NULL DEFAULT 0'}}
 
@@ -160,10 +160,10 @@ class Store:
         return book_id
 
     def books(self):
-        return self.all('SELECT id, title, author, block_count, position_block, language FROM book ORDER BY created_at DESC, id DESC')
+        return self.all('SELECT id, title, author, block_count, position_block, position_seq, language FROM book ORDER BY created_at DESC, id DESC')
 
     def book(self, book_id):
-        book = self.one('SELECT id, title, author, block_count, position_block, language FROM book WHERE id = ?', (book_id,))
+        book = self.one('SELECT id, title, author, block_count, position_block, position_seq, language FROM book WHERE id = ?', (book_id,))
         if book:
             book['chapters'] = self.all('SELECT idx AS "index", title, first_block, block_count FROM chapter '
                                         'WHERE book_id = ? ORDER BY idx', (book_id,))
