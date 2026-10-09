@@ -51,10 +51,11 @@ class FakeEngine:
     """Stands in for the speech models: records what it was asked and returns short tones."""
 
     def __init__(self):
-        self.designed, self.spoken, self.during_speak, self.languages = [], [], None, set()
+        self.designed, self.others, self.spoken, self.during_speak, self.languages = [], [], [], None, set()
 
-    def design(self, instruction, seed, language='en'):
+    def design(self, instruction, seed, language='en', others=()):
         self.designed.append(instruction)
+        self.others.append(list(others))
         self.languages.add(language)
         return np.full(24000 * 7, 0.1, dtype='float32'), 24000
 

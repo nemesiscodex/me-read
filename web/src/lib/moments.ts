@@ -9,9 +9,10 @@ import type { BlockSpan } from './pages'
  * before the page in view, so a moment on the page in view is never shown before it is read aloud or the page is
  * turned.
  *
- * A limit of pictures a page, which the reader sets: of the pictures on one page only the first `limit` count. A
- * paragraph that runs over a page break belongs to the page it ends on, which is how the server counts when that
- * page is the current one. A picture the reader starred always counts and takes none of those places.
+ * A limit of pictures a page, which the reader sets: of the pictures on one page only the `limit` most important
+ * count, the earlier one first when two matter as much. A paragraph that runs over a page break belongs to the page
+ * it ends on, which is how the server counts when that page is the current one. A picture the reader starred always
+ * counts and takes none of those places.
  *
  * A picture stays until something replaces it: the last counted picture that is drawn stays up on later pages,
  * until the next one or until a moment of kind 'clear', which says the picture stopped matching the text and takes
@@ -32,20 +33,23 @@ export function readingPosition(spans: BlockSpan[], page: number, activeIdx: num
   return onPage.length > 0 ? Math.min(...onPage.map((span) => span.idx)) - 1 : -1
 }
 
-/** The moments that count, in reading order: every clear, every starred picture, and per page the first `limit` others. */
+/** The moments that count, in reading order: every clear, every starred picture, and per page the `limit` most important others. */
 export function countedMoments(moments: Moment[], spans: BlockSpan[], limit: number): Moment[] {
   const pageOf = new Map(spans.map((span) => [span.idx, span.lastPage]))
-  const pictures = new Map<number, number>()
-  return [...moments]
-    .sort((a, b) => a.block_idx - b.block_idx)
-    .filter((moment) => {
-      const page = pageOf.get(moment.block_idx)
-      if (page === undefined) return false
-      if (moment.kind === 'clear' || moment.starred) return true
-      const before = pictures.get(page) ?? 0
-      pictures.set(page, before + 1)
-      return before < limit
-    })
+  const taken = new Map<number, number>()
+  const counted = new Set<Moment>()
+  for (const moment of [...moments].sort((a, b) => b.importance - a.importance || a.block_idx - b.block_idx)) {
+    const page = pageOf.get(moment.block_idx)
+    if (page === undefined) continue
+    if (moment.kind === 'clear' || moment.starred) {
+      counted.add(moment)
+      continue
+    }
+    const before = taken.get(page) ?? 0
+    taken.set(page, before + 1)
+    if (before < limit) counted.add(moment)
+  }
+  return [...counted].sort((a, b) => a.block_idx - b.block_idx)
 }
 
 /** The last counted moment the reading has reached, whether or not its picture is drawn. */

@@ -8,12 +8,13 @@ import urllib.request
 from . import speech
 
 PORTRAIT_SIZE = 512, 512
-SCENE_SIZE = 640, 432
+SCENE_SIZE = 896, 608
 REFERENCE_PX = 256
 TIMEOUT = 120
 PNG = b'\x89PNG\r\n\x1a\n'
-STYLE = ('Courtroom sketch illustration, loose pastel and charcoal on toned paper, quick expressive strokes, muted colours, '
-         'visible hatching. No text, no signature, no caption. ')
+# The look goes after what is drawn: said first, the word "courtroom" turned night fields into panelled rooms.
+STYLE = (' Drawn by hand the way a courtroom artist sketches: loose pastel and charcoal on toned paper, quick expressive '
+         'strokes, muted colours, visible hatching. No text, no signature, no caption.')
 
 
 class ImageError(RuntimeError):
@@ -30,13 +31,15 @@ def _sentence(text):
 
 def portrait_prompt(character):
     who = speech.AGE_GENDER.get((character['age'], character['gender']), speech.AGE[character['age']])
-    return f"{STYLE}Portrait of {who[0].lower()}{who[1:]}: {_sentence(character['appearance'])} Head and shoulders, plain background."
+    # An appearance goes down to the boots, and drawn in full it leaves a face too small to copy into a scene.
+    return (f"Close portrait of {who[0].lower()}{who[1:]}, head and shoulders only, the face large in the middle of the "
+            f"picture: {_sentence(character['appearance'])} Nothing below the chest is shown. Plain background.{STYLE}")
 
 
 def scene_prompt(scene, referenced, described):
     """`referenced` are the names behind the reference images, in order; `described` are (name, appearance) of the rest."""
-    return (STYLE + _sentence(scene) + ''.join(f' {name} is the person in image {n}.' for n, name in enumerate(referenced, 1))
-            + ''.join(f' {name}: {_sentence(appearance)}' for name, appearance in described))
+    return (_sentence(scene) + ''.join(f' {name} is the person in image {n}.' for n, name in enumerate(referenced, 1))
+            + ''.join(f' {name}: {_sentence(appearance)}' for name, appearance in described) + STYLE)
 
 
 def generate(url, prompt, width, height, seed, references=()):

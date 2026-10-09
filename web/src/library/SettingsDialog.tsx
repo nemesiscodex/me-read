@@ -99,11 +99,15 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                 value={settings.pictures_per_page}
                 onChange={(event) => setSettings({ ...settings, pictures_per_page: Number(event.target.value) })}
               >
-                {[1, 2, 3, 4].map((count) => (
+                {Array.from({ length: 12 }, (_, n) => n + 1).map((count) => (
                   <option key={count}>{count}</option>
                 ))}
               </select>
             </label>
+            <p className="field-help">
+              Every moment worth a picture is found, and on each page the most important ones are drawn, up to this
+              number. A picture takes about 20 seconds.
+            </p>
             <p className="field-help">
               Enables illustrations of key moments while you read. Enter the address of the image service from
               imager/, or leave it empty for none.

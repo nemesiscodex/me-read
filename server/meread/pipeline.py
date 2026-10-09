@@ -192,18 +192,16 @@ class Pipeline:
         self.store.run(f"UPDATE block SET scene_state = 'scanning' WHERE id IN ({marks})", ids)
         book = self.store.one('SELECT title, author, language FROM book WHERE id = ?', (book_id,))
         self._say('scenes', f"Asking {settings['provider']} for moments to draw in {len(batch)} paragraphs")
-        last = self.store.one('SELECT kind, scene, block_idx FROM moment WHERE book_id = ? AND block_idx < ? '
+        last = self.store.one('SELECT kind, summary, scene, block_idx FROM moment WHERE book_id = ? AND block_idx < ? '
                               'ORDER BY block_idx DESC LIMIT 1', (book_id, start))
         prompt, markers = scenes.build_prompt(
             book, self.store.characters(book_id), last,
             self.store.blocks(book_id, start - CONTEXT_BLOCKS, start - 1),
-            self.store.blocks(book_id, start, batch[-1]['idx']),
-            settings['pictures_per_page'], max(1, focus['current_last'] - focus['current_first'] + 1))
+            self.store.blocks(book_id, start, batch[-1]['idx']))
         try:
             answer, cost = self.ask(settings, prompt, self.llm_cwd, system=scenes.SYSTEM, schema=scenes.SCHEMA)
             self.store.record_usage(settings['provider'], settings[f"{settings['provider']}_model"], len(batch), cost)
-            # The scan covers two pages.
-            created = scenes.apply(self.store, book_id, markers, answer, settings['pictures_per_page'] * 2)
+            created = scenes.apply(self.store, book_id, markers, answer)
         except tagger.TaggerError as e:
             log.warning('looking for moments failed: %s', e)
             self.store.run(f"UPDATE block SET scene_state = 'pending' WHERE scene_state = 'scanning' AND id IN ({marks})", ids)
@@ -272,6 +270,10 @@ class Pipeline:
                 os.unlink(tmp)
         return False
 
+    def _other_voices(self, character):
+        return [self.store.voice_path(c) for c in self.store.characters(character['book_id'])
+                if c['id'] != character['id'] and c['voice_state'] == 'ready']
+
     def design_voice(self, character):
         rev, book_id = character['voice_rev'], character['book_id']
         claimed = self.store.run("UPDATE character SET voice_state = 'designing', error = NULL "
@@ -282,7 +284,7 @@ class Pipeline:
         self._say('speech', f"Designing a voice for {character['name']}")
         try:
             audio, rate = self.engine.design(speech.voice_instruction(character), seed=character['id'] * 1000 + rev,
-                                             language=self._language(book_id))
+                                             language=self._language(book_id), others=self._other_voices(character))
             self._land(lambda tmp: sf.write(tmp, audio, rate, format='WAV'), self.store.voice_path(character),
                        lambda: self.store.run("UPDATE character SET voice_state = 'ready' WHERE id = ? AND voice_rev = ? "
                                               "AND voice_state = 'designing'", (character['id'], rev)).rowcount)
@@ -302,7 +304,7 @@ class Pipeline:
         self._say('speech', f"Designing a candidate voice for {character['name']}")
         try:
             audio, rate = self.engine.design(speech.voice_instruction(character), seed=character['id'] * 1000 + 500 + rev,
-                                             language=self._language(book_id))
+                                             language=self._language(book_id), others=self._other_voices(character))
             self._land(lambda tmp: sf.write(tmp, audio, rate, format='WAV'), self.store.draft_path(character),
                        lambda: self.store.run("UPDATE character SET draft_state = 'ready' WHERE id = ? AND draft_rev = ? "
                                               "AND draft_state = 'designing'", (character['id'], rev)).rowcount)
@@ -417,9 +419,11 @@ class Pipeline:
         if starred:
             return self._draw_scene(book_id, starred, url)
         pages = (focus['current_first'], focus['current_last']), (focus['current_last'] + 1, focus['last'])
-        counted = [self.store.all("SELECT id, scene, image_state, image_rev FROM moment WHERE book_id = ? "
-                                  "AND kind = 'picture' AND NOT starred AND block_idx BETWEEN ? AND ? ORDER BY block_idx LIMIT ?",
-                                  (book_id, first, last, settings['pictures_per_page'])) for first, last in pages]
+        # Of a page's moments the ones that matter most count, and they are drawn in reading order.
+        counted = [sorted(self.store.all(
+            "SELECT id, scene, image_state, image_rev, block_idx FROM moment WHERE book_id = ? AND kind = 'picture' "
+            "AND NOT starred AND block_idx BETWEEN ? AND ? ORDER BY importance DESC, block_idx LIMIT ?",
+            (book_id, first, last, settings['pictures_per_page'])), key=lambda m: m['block_idx']) for first, last in pages]
         ids = [m['id'] for page in counted for m in page]
         self.store.run(f"UPDATE moment SET wanted = 1 WHERE wanted = 0 AND id IN ({','.join('?' * len(ids))})", ids)
         # The picture on screen now is the last one behind the reader, when the page was turned before it was drawn

@@ -47,8 +47,10 @@ that title: "Duchess", "Mouse".
 "Guard 2". Continue the numbering of extras already in the cast. People speaking together are one extra, such as "Crowd 1".
 - Set gender, age and pitch from what the text says about the character, and make a sensible guess when it says nothing.
 - Write names as the book does, in the book's language ("Guardia 1" in a Spanish book).
-- `description` is always in English: at most fifteen words on how the voice sounds, such as "gruff, impatient old sailor with a \
-rasping voice".
+- `description` is always in English: at most fifteen words on how the voice sounds and nothing on who the character \
+is. Give its texture (husky, breathy, nasal, raspy, smooth, thin, full, creaky), how loud and how fast it is, and an \
+accent when the book gives one, such as "raspy and gruff, loud, slow and heavy". Make it differ from the voices of \
+the cast so far. Leave out age, gender and pitch, which have their own fields.
 Reply with the JSON object only."""
 
 

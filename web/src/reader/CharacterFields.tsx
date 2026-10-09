@@ -60,7 +60,7 @@ export function CharacterFields({ value, onChange, autoFocus, appearance }: Prop
           <textarea
             id="character-appearance"
             rows={2}
-            maxLength={300}
+            maxLength={400}
             value={value.appearance}
             placeholder="Tall, grey beard, a worn blue coat"
             onChange={(event) => set({ appearance: event.target.value })}

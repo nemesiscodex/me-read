@@ -63,6 +63,15 @@ describe('momentToShow', () => {
     expect(momentReached([moment(14), moment(15, { image_state: 'drawing' })], spans, 1, 16)?.id).toBe(14)
   })
 
+  it('counts the most important pictures of a page, the earlier one first when two matter as much', () => {
+    const weighed = [moment(10, { importance: 3 }), moment(11, { importance: 9 }), moment(12, { importance: 3 }), moment(13)]
+    // 13 ends on the next page, so it competes there and not with the three before it.
+    expect(countedMoments(weighed, spans, 2).map((m) => m.id)).toEqual([10, 11, 13])
+    expect(countedMoments(weighed, spans, 1).map((m) => m.id)).toEqual([11, 13])
+    expect(countedMoments(weighed, spans, 3).map((m) => m.id)).toEqual([10, 11, 12, 13])
+    expect(momentToShow(weighed, spans, 1, 12)?.id).toBe(11)
+  })
+
   it('always counts a starred picture, on top of the others of its page', () => {
     const moments = [moment(14, { starred: true }), moment(15), moment(16, { starred: true })]
     expect(countedMoments(moments, spans, 1).map((m) => m.id)).toEqual([14, 15, 16])

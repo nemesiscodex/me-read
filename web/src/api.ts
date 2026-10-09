@@ -42,8 +42,14 @@ export interface Moment {
   /** `Block.idx` of the paragraph. */
   block_idx: number
   kind: 'picture' | 'clear'
-  /** What the picture shows. Empty for a clear. */
+  /** A few words to put under the picture. Empty for a clear, and for a moment found before titles existed. */
+  title: string
+  /** One sentence on what happens. */
+  summary: string
+  /** What the picture is drawn from. Empty for a clear. */
   scene: string
+  /** 1 to 10. Of the moments on a page the highest count first. */
+  importance: number
   /** The characters in the picture, most important first. */
   character_ids: number[]
   image_state: DrawState
