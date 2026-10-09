@@ -2,7 +2,7 @@
 
 The image service for me-read's illustrations. It keeps FLUX.2 klein 4B loaded on a GPU and draws one picture per request. It runs on a second machine so that drawing does not compete with speech on the Mac.
 
-Written for and tested on Linux with an AMD Radeon RX 6900 XT (16 GB) through the ROCm build of PyTorch. There a 512x512 portrait takes about 9 seconds and a 640x432 scene with two reference portraits about 12.
+Written for and tested on Linux with an AMD Radeon RX 6900 XT (16 GB) through the ROCm build of PyTorch. There a 512x512 portrait takes about 9 seconds and a 640x432 scene with two reference portraits about 12, and the 896x608 scene the reader asks for about 19.
 
 ## Run it
 

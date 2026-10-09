@@ -1,5 +1,10 @@
+import asyncio
 import re
 
+import numpy as np
+
+from meread import speech
+from meread.app import Hub
 from meread.tagger import TaggerError
 
 CAST = [{'ref': 'n1', 'name': 'Guard 1', 'role': 'extra', 'gender': 'male', 'age': 'adult', 'pitch': 'low',
@@ -59,7 +64,7 @@ def test_tagging_attributes_lines_and_builds_the_cast(world):
         'female', 'elderly', 'high', 'named')
     assert cast['Guard 1']['role'] == 'extra' and cast['Tom']['line_count'] == 2
     assert all(c['voice_state'] == 'ready' for c in cast.values())
-    assert any('elderly woman' in d.lower() and 'high-pitched' in d for d in world.engine.designed)
+    assert 'An elderly woman with a high, bright voice. Thin, high voice.' in world.engine.designed
 
 
 def test_later_pages_reuse_the_cast_by_ref_and_by_name(world):
@@ -162,7 +167,10 @@ def test_a_new_voice_is_auditioned_before_it_replaces_the_old_one(world):
 
     assert world.client.post(f'{url}/voice/draft').json()['draft_state'] == 'queued'
     world.drain()
-    assert 'adult man' in world.engine.designed[-1].lower() and 'low-pitched' in world.engine.designed[-1]
+    assert world.engine.designed[-1].startswith('An adult man with a low, deep voice.')
+    voices = {c['name']: world.store.voice_path(c) for c in world.store.characters(world.book['id'])}
+    assert sorted(world.engine.others[-1]) == sorted(path for name, path in voices.items() if name != 'Tom'), \
+        'a new voice is kept apart from every other voice of the book, not from the one it replaces'
     assert world.client.get(f'{url}/voice/draft').status_code == 200
     candidate = world.store.character(tom['id'])
     assert (candidate['draft_state'], candidate['voice_rev']) == ('ready', tom['voice_rev'])
@@ -295,3 +303,36 @@ def test_the_line_at_the_top_of_the_page_is_where_the_book_opens_again(world):
     assert world.client.post(f"/api/books/{world.book['id']}/focus", json=body).status_code == 204
     book = world.client.get(f"/api/books/{world.book['id']}").json()
     assert (book['position_block'], book['position_seq']) == (3, 1)
+
+
+def test_a_sample_that_passes_for_an_existing_voice_is_shifted_by_as_little_as_it_takes():
+    alike = {0: 0.91, -2: 0.88, 2: 0.80, -3: 0.60, 3: 0.70}
+    asked = []
+    assert speech.most_distinct(speech.SHIFTS, lambda shift: asked.append(shift) or alike[shift]) == 2
+    assert asked == [0, -2, 2], 'larger shifts are not tried once a small one is enough'
+    assert speech.most_distinct(speech.SHIFTS, lambda shift: 0.5) == 0, 'a voice that is already its own is left alone'
+    assert speech.most_distinct(speech.SHIFTS, {0: 0.95, -2: 0.93, 2: 0.94, -3: 0.90, 3: 0.92}.get) == -3
+
+
+def test_shifting_a_sample_down_plays_it_slower_and_so_lower():
+    rate = 24000
+    tone = np.sin(2 * np.pi * 220 * np.arange(rate) / rate).astype('float32')
+    lower = speech.shifted(tone, -12)
+    assert abs(len(lower) - 2 * rate) <= 2
+    crossings = np.count_nonzero(np.diff(np.signbit(lower)))
+    assert abs(crossings / 2 / (len(lower) / rate) - 110) < 1
+    assert speech.shifted(tone, 0) is tone
+
+
+def test_closing_the_hub_ends_open_event_streams_and_refuses_new_ones():
+    async def scenario():
+        hub = Hub()
+        hub.loop = asyncio.get_running_loop()
+        stream = hub.stream(1, {'type': 'activity'})
+        first = await anext(stream)
+        hub.close()
+        rest = [chunk async for chunk in stream]
+        late = [chunk async for chunk in hub.stream(1, {'type': 'activity'})]
+        return first, rest, late
+    first, rest, late = asyncio.run(asyncio.wait_for(scenario(), 5))
+    assert first.startswith('data: ') and rest == [] and late == []

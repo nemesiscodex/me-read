@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS moment (
   id INTEGER PRIMARY KEY, book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
   block_id INTEGER NOT NULL UNIQUE REFERENCES block(id) ON DELETE CASCADE, block_idx INTEGER NOT NULL,
   kind TEXT NOT NULL DEFAULT 'picture' CHECK (kind IN ('picture', 'clear')), scene TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', importance INTEGER NOT NULL DEFAULT 5,
   image_state TEXT NOT NULL DEFAULT 'none' CHECK (image_state IN ('none', 'drawing', 'ready', 'failed')),
   image_rev INTEGER NOT NULL DEFAULT 0, error TEXT, wanted INTEGER NOT NULL DEFAULT 0,
   starred INTEGER NOT NULL DEFAULT 0);
@@ -62,10 +63,12 @@ CREATE INDEX IF NOT EXISTS moment_character_of ON moment_character (character_id
 SEGMENT = 'id, block_id, seq, text, kind, character_id, audio_state, audio_rev, duration, error'
 CHARACTER = ('c.id, c.book_id, c.name, c.role, c.gender, c.age, c.pitch, c.description, c.voice_state, c.voice_rev, '
              'c.error, c.draft_state, c.draft_rev, c.appearance, c.portrait_state, c.portrait_rev, c.portrait_error, (SELECT COUNT(*) FROM segment s WHERE s.character_id = c.id AND s.kind = \'speech\') AS line_count')
-MOMENT = 'm.id, m.block_id, m.block_idx, m.kind, m.scene, m.image_state, m.image_rev, m.error, m.starred'
+MOMENT = ('m.id, m.block_id, m.block_idx, m.kind, m.title, m.summary, m.scene, m.importance, m.image_state, m.image_rev, '
+          'm.error, m.starred')
 # The moments a character is drawn in.
 FEATURING = 'm.id IN (SELECT moment_id FROM moment_character WHERE character_id = ?)'
 FIELDS = ('name', 'gender', 'age', 'pitch', 'description', 'appearance')
+MAX_PICTURES_PER_PAGE = 12
 DEFAULT_SETTINGS = {'provider': 'claude', 'claude_model': 'claude-haiku-5-5', 'codex_model': 'gpt-6-luna',
                     'tagging_paused': False, 'image_url': '', 'illustrations': True, 'pictures_per_page': 2}
 # Columns added after the first release, for libraries created before them.
@@ -75,7 +78,9 @@ ADDED_COLUMNS = {'book': {'language': "TEXT NOT NULL DEFAULT 'en'", 'position_se
     'portrait_state': "TEXT NOT NULL DEFAULT 'none' CHECK (portrait_state IN ('none', 'drawing', 'ready', 'failed'))",
     'portrait_rev': 'INTEGER NOT NULL DEFAULT 0', 'portrait_error': 'TEXT'},
     'block': {'scene_state': "TEXT NOT NULL DEFAULT 'pending' CHECK (scene_state IN ('pending', 'scanning', 'done'))"},
-    'moment': {'wanted': 'INTEGER NOT NULL DEFAULT 0', 'starred': 'INTEGER NOT NULL DEFAULT 0'}}
+    'moment': {'wanted': 'INTEGER NOT NULL DEFAULT 0', 'starred': 'INTEGER NOT NULL DEFAULT 0',
+               'title': "TEXT NOT NULL DEFAULT ''", 'summary': "TEXT NOT NULL DEFAULT ''",
+               'importance': 'INTEGER NOT NULL DEFAULT 5'}}
 
 
 def illustrating(settings):
@@ -92,13 +97,19 @@ class Store:
         self.db.row_factory = sqlite3.Row
         self.db.execute('PRAGMA foreign_keys = ON')
         self.db.execute('PRAGMA journal_mode = WAL')
+        added = set()
         for table, columns in ADDED_COLUMNS.items():
             if self.db.execute(f"SELECT 1 FROM sqlite_master WHERE name = '{table}'").fetchone():
                 have = {row['name'] for row in self.db.execute(f'PRAGMA table_info({table})')}
                 for column, definition in columns.items():
                     if column not in have:
                         self.db.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
+                        added.add((table, column))
         self.db.executescript(SCHEMA)
+        if ('moment', 'importance') in added:
+            # Until now only the few best moments were kept. Pages are looked through again as they are read, for
+            # every moment and how much each one matters.
+            self.run("UPDATE block SET scene_state = 'pending' WHERE scene_state = 'done'")
         # Work interrupted by a restart goes back in the queue.
         self.run("UPDATE block SET tag_state = 'pending' WHERE tag_state = 'tagging'")
         self.run("UPDATE segment SET audio_state = 'none' WHERE audio_state = 'generating'")

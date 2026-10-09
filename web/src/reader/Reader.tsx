@@ -404,6 +404,11 @@ export function Reader({ bookId, place }: { bookId: number; place: Place | null 
           <ScenePanel
             shown={momentToShow(data.moments, pagination.spans, perPage, position)}
             reached={momentReached(data.moments, pagination.spans, perPage, position)}
+            caption={
+              active && activeMode
+                ? { text: active.segment.text.trim(), speaker: speaker && speaker.role !== 'narrator' ? speaker.name : null }
+                : null
+            }
             onMoment={(moment) => dispatch({ type: 'momentSaved', moment })}
           />
         )}

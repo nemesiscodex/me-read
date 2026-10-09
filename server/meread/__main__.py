@@ -16,7 +16,15 @@ def main():
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(name)s %(message)s')
     web = Path(__file__).resolve().parents[2] / 'web/dist'
-    uvicorn.run(create_app(args.home, web_dir=web), host=args.host, port=args.port)
+    app = create_app(args.home, web_dir=web)
+
+    class Server(uvicorn.Server):
+        def handle_exit(self, sig, frame):
+            app.state.hub.close()
+            super().handle_exit(sig, frame)
+
+    # The limit is for a request that is still waiting on Claude or Codex when the server is asked to stop.
+    Server(uvicorn.Config(app, host=args.host, port=args.port, timeout_graceful_shutdown=5)).run()
 
 
 if __name__ == '__main__':

@@ -6,6 +6,10 @@ from . import tagger
 MAX_ENDS = 2
 MAX_CHARACTERS = 3
 LOOK_BUDGET = 24000
+TITLE_CHARS = 80
+SUMMARY_CHARS = 240
+SCENE_CHARS = 1400
+APPEARANCE_CHARS = 900
 # Words of a name that say nothing about who is meant.
 TITLES = {'miss', 'lady', 'lord', 'doctor', 'captain', 'mister', 'madam', 'madame', 'master', 'professor',
           'señor', 'señora', 'señorita', 'doña', 'doctora', 'capitán', 'capitana', 'profesor', 'profesora'}
@@ -14,36 +18,61 @@ SCHEMA = {
     'properties': {
         'ends': {'type': 'array', 'items': {'type': 'integer'}},
         'moments': {'type': 'array', 'items': {
-            'type': 'object', 'additionalProperties': False, 'required': ['p', 'scene', 'characters'],
-            'properties': {'p': {'type': 'integer'}, 'scene': {'type': 'string'},
+            'type': 'object', 'additionalProperties': False,
+            'required': ['p', 'title', 'summary', 'scene', 'importance', 'characters'],
+            'properties': {'p': {'type': 'integer'}, 'title': {'type': 'string'}, 'summary': {'type': 'string'},
+                           'scene': {'type': 'string'}, 'importance': {'type': 'integer'},
                            'characters': {'type': 'array', 'items': {'type': 'string'}}}}},
         'appearances': {'type': 'array', 'items': {
             'type': 'object', 'additionalProperties': False, 'required': ['character', 'appearance'],
             'properties': {'character': {'type': 'string'}, 'appearance': {'type': 'string'}}}}}}
+# What an appearance has to say, for both prompts that write one.
+LOOK = """80 to 120 English words that would let two artists draw the same person from the chest up: apparent age, \
+build, skin, the shape of the face, eyes, nose and mouth, hair with its colour, length and style, anything that marks \
+them out (scars, glasses, beard, freckles, jewellery), and what they usually wear on the head and upper body, garment \
+by garment with colours and condition. Nothing below the waist, which the portrait does not show. Say what is seen, \
+never what they are like"""
 # What both prompts say about describing a moment and the people in it.
-RULES = """- `scene` is always in English: at most 40 words in the present tense on what is seen at that instant, and nothing \
-else: who, doing what, where, in what light. Name cast members by their cast name. No dialogue and no written text.
+RULES = """- `title` is at most 6 words, like the caption under a plate in an illustrated book. `summary` is one sentence of at \
+most 25 words on what happens. Both are in English and tell nothing the text has not reached at that paragraph.
+- `scene` is what the artist draws from, and the artist has not read the book and knows no name in it. Write 110 to \
+160 English words in the present tense on what is seen at that instant, and nothing else, in this order:
+  1. Indoors or outdoors, the time of day, the weather and the light with where it comes from, then the place in \
+plain words that say what it looks like: "Night, outdoors, in a dark grassy field beside a tall crooked farmhouse \
+with lit windows", never only "at the Burrow".
+  2. How many people are seen: "Two people." or "Three people and a large black dog."
+  3. Each one in turn: where they are (on the left, in the middle, on the right, in the background), their pose, \
+what their hands do, their expression and where they look. Call a cast member by their cast name, every time and \
+with nothing about their face, hair or usual clothes: the artist has their portrait. Do say what is different from \
+usual at this moment: soaked, bleeding, in a nightshirt, carrying a lantern. Say what anyone else looks like.
+  4. The things that matter in the picture and where they are: furniture, objects held, doors, windows, animals.
+  5. The background and the mood of the light: colours, shadows, smoke, rain.
+  No dialogue, no written text, no thoughts or feelings that cannot be seen.
+- `importance` is a whole number from 1 to 10 and is compared across the whole book, so use it the same way every \
+time: 9 or 10 for a turning point of the story, 7 or 8 for a strong new sight such as an arrival, a fight, a \
+discovery or a new place, 4 to 6 for a clear change in what is seen, 1 to 3 for a small one.
 - `characters` lists the cast members visible in the scene by ref, such as "c12": at most three, most important \
 first. Never the narrator, and nobody who is not in the cast.
 - `appearances` has one entry for every cast member you list in a moment whose appearance is "(not described yet)": \
-{"character": "c12", "appearance": "..."}. At most 25 English words on how they look: build, face, hair, clothing. \
-Take it from the book, and guess sensibly for the setting where the book says nothing.
+{"character": "c12", "appearance": "..."}. """ + LOOK + """. Take it from the book, and guess sensibly for the \
+setting where the book says nothing.
 - Never rewrite an appearance the cast already has.
 Reply with the JSON object only."""
-SYSTEM = """You choose the moments of a book to illustrate for someone who is reading it, the way a courtroom artist \
-chooses what to sketch. One artist draws every picture, and a picture stays in front of the reader until the next one.
+MOMENT = '{"p": 7, "title": "...", "summary": "...", "scene": "...", "importance": 6, "characters": [REF, ...]}'
+SYSTEM = """You find the moments of a book that an artist could illustrate for someone who is reading it, the way a \
+courtroom artist finds what to sketch. One artist draws the pictures, and a picture stays in front of the reader \
+until the next one.
 
-You get the cast, LAST ILLUSTRATION (what the picture now in front of the reader shows), LIMIT (the most pictures \
-one page may hold), some earlier text for context, and the text to scan. In that text every paragraph starts with a \
-marker such as [[p7]].
+You get the cast, LAST ILLUSTRATION (the nearest moment before this text), some earlier text for context, and the \
+text to scan. In that text every paragraph starts with a marker such as [[p7]].
 
-Return in `moments` the paragraphs that deserve a new picture: {"p": 7, "scene": "...", "characters": [REF, ...]}.
+Return in `moments` every moment of that text worth a picture: """ + MOMENT + """
 
 Rules:
-- Be sparing. LIMIT is a ceiling, not a target: stay well under it unless the pictures would really differ from each \
-other. An empty list is a normal answer.
-- Mark a moment only when its picture would clearly differ from LAST ILLUSTRATION and from the other moments you \
-mark: a new place, new people, or a turning point. More talk in the same room is not a new picture.
+- Find them all, not only the best ones: the reader chooses how many pictures a page shows, and the ones with the \
+highest `importance` are drawn. A page of action or travel has several; a page of talk in one room may have one.
+- At most one moment a paragraph. Two moments must differ in what is seen: another place, other people, another \
+action. More talk in the same room is not a new moment.
 - Put the marker on the paragraph where the thing becomes visible, never earlier. The picture must not show the \
 reader anything the text has not reached.
 - `ends` lists the paragraphs, by marker number, from which LAST ILLUSTRATION no longer matches what is happening because the place or the people changed, while nothing there is worth a new picture yet. The picture is taken down at that paragraph. Use it sparingly and only for a clear change; an empty list is the normal answer, and it is always empty when LAST ILLUSTRATION is "(none)".
@@ -52,7 +81,7 @@ STAR_SYSTEM = """You describe one moment of a book for the artist who illustrate
 
 You get the cast, some earlier text for context, and the paragraph, which starts with the marker [[p1]].
 
-Return exactly one moment for it in `moments`: {"p": 1, "scene": "...", "characters": [REF, ...]}.
+Return exactly one moment for it in `moments`: """ + MOMENT.replace('7', '1') + """
 
 Rules:
 - `ends` is always empty.
@@ -80,11 +109,10 @@ def _prompt(book, cast, earlier, blocks, *about):
     return prompt, markers
 
 
-def build_prompt(book, cast, last, earlier, blocks, limit, page):
+def build_prompt(book, cast, last, earlier, blocks):
     """The prompt, and the block behind each [[pN]] marker.
 
     `last` is the nearest moment before `blocks`, or None. `earlier` and `blocks` are blocks with their segments.
-    `limit` is how many pictures a page may hold, and `page` how many paragraphs the page in view has.
     """
     back = last and blocks[0]['idx'] - last['block_idx']
     back = last and f"{back} {'paragraph' if back == 1 else 'paragraphs'} back"
@@ -93,10 +121,8 @@ def build_prompt(book, cast, last, earlier, blocks, limit, page):
     elif last['kind'] == 'clear':
         showing = f'(none) The picture before it stopped matching the text {back}.'
     else:
-        showing = f"{last['scene']} ({back})"
-    return _prompt(book, cast, earlier, blocks, 'LAST ILLUSTRATION:\n' + showing,
-                   f"LIMIT: at most {limit} {'picture' if limit == 1 else 'pictures'} a page. "
-                   f"A page here is about {page} {'paragraph' if page == 1 else 'paragraphs'}.")
+        showing = f"{last['summary'] or last['scene']} ({back})"
+    return _prompt(book, cast, earlier, blocks, 'LAST ILLUSTRATION:\n' + showing)
 
 
 def star_prompt(book, cast, earlier, block):
@@ -108,23 +134,33 @@ def _clean(value, limit):
     return ' '.join(value.split())[:limit] if isinstance(value, str) else ''
 
 
-def apply(store, book_id, markers, answer, most):
-    """Store the answer, with at most `most` pictures. Returns the ids of the new moment rows; a paragraph that
-    already has one keeps it."""
+def _importance(value):
+    return min(10, max(1, value)) if isinstance(value, int) and not isinstance(value, bool) else 5
+
+
+def apply(store, book_id, markers, answer, most=None):
+    """Store the answer, with at most `most` pictures when given. Returns the ids of the moment rows it wrote. A
+    paragraph that already has a moment keeps it, except that one found before moments had titles takes the new
+    words and keeps its picture."""
     cast = {f"c{c['id']}": c['id'] for c in store.characters(book_id) if c['role'] != 'narrator'}
     wanted, created = answer.get('moments'), []
     found = sorted((m for m in wanted if isinstance(m, dict) and isinstance(m.get('p'), int)),
                    key=lambda m: m['p']) if isinstance(wanted, list) else []
     for moment in found[:most]:
-        block, scene = markers.get(moment['p']), _clean(moment.get('scene'), 400)
+        block, scene = markers.get(moment['p']), _clean(moment.get('scene'), SCENE_CHARS)
         if not block or not scene:
             continue
+        words = (_clean(moment.get('title'), TITLE_CHARS), _clean(moment.get('summary'), SUMMARY_CHARS), scene,
+                 _importance(moment.get('importance')))
         refs = moment.get('characters') if isinstance(moment.get('characters'), list) else []
         present = list(dict.fromkeys(cast[ref] for ref in refs if isinstance(ref, str) and ref in cast))[:MAX_CHARACTERS]
         with store.lock:
-            added = store.run('INSERT OR IGNORE INTO moment (book_id, block_id, block_idx, scene) VALUES (?, ?, ?, ?)',
-                              (book_id, block['id'], block['idx'], scene))
+            added = store.run('INSERT OR IGNORE INTO moment (book_id, block_id, block_idx, title, summary, scene, importance) '
+                              'VALUES (?, ?, ?, ?, ?, ?, ?)', (book_id, block['id'], block['idx'], *words))
             if not added.rowcount:
+                if words[0] and store.run("UPDATE moment SET title = ?, summary = ?, scene = ?, importance = ? "
+                                          "WHERE block_id = ? AND kind = 'picture' AND title = ''", (*words, block['id'])).rowcount:
+                    created.append(store.one('SELECT id FROM moment WHERE block_id = ?', (block['id'],))['id'])
                 continue
             for pos, character_id in enumerate(present):
                 store.run('INSERT INTO moment_character (moment_id, character_id, pos) VALUES (?, ?, ?)',
@@ -141,7 +177,7 @@ def apply(store, book_id, markers, answer, most):
     looks = answer.get('appearances')
     for look in looks if isinstance(looks, list) else []:
         character_id = cast.get(look.get('character')) if isinstance(look, dict) and isinstance(look.get('character'), str) else None
-        appearance = _clean(look.get('appearance'), 300) if character_id else ''
+        appearance = _clean(look.get('appearance'), APPEARANCE_CHARS) if character_id else ''
         if appearance:
             store.run("UPDATE character SET appearance = ? WHERE id = ? AND appearance = ''", (appearance, character_id))
     return created
@@ -155,8 +191,8 @@ LOOK_SYSTEM = """You describe how a character of a book looks, so that an artist
 
 You get the character and the paragraphs of the book that mention them or hold their lines, in book order.
 
-Return {"appearance": "..."}: at most 25 English words on build, face, hair and clothing. Take it from the text, and \
-guess sensibly for the setting where the text says nothing. Describe how they look for most of the book, not a \
+Return {"appearance": "..."}: """ + LOOK + """. Take it from the text, and guess sensibly for the setting where \
+the text says nothing. Describe how they look for most of the book, not a \
 disguise or a single scene.
 Reply with the JSON object only."""
 
@@ -196,4 +232,4 @@ def look_prompt(book, character, paragraphs):
 
 
 def look_from(answer):
-    return _clean(answer.get('appearance'), 300)
+    return _clean(answer.get('appearance'), APPEARANCE_CHARS)

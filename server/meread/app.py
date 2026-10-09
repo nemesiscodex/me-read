@@ -13,9 +13,9 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
-from . import epub, speech, tagger
+from . import epub, scenes, speech, tagger
 from .pipeline import Pipeline
-from .store import FEATURING, Store, illustrating
+from .store import FEATURING, MAX_PICTURES_PER_PAGE, Store, illustrating
 
 Gender = Literal['male', 'female', 'unknown']
 Age = Literal['child', 'teen', 'adult', 'elderly']
@@ -28,7 +28,7 @@ class CharacterInput(BaseModel):
     age: Age = 'adult'
     pitch: Pitch = 'medium'
     description: str = Field('', max_length=200)
-    appearance: str = Field('', max_length=300)
+    appearance: str = Field('', max_length=scenes.APPEARANCE_CHARS)
 
 
 class CharacterChanges(BaseModel):
@@ -37,7 +37,7 @@ class CharacterChanges(BaseModel):
     age: Optional[Age] = None
     pitch: Optional[Pitch] = None
     description: Optional[str] = Field(None, max_length=200)
-    appearance: Optional[str] = Field(None, max_length=300)
+    appearance: Optional[str] = Field(None, max_length=scenes.APPEARANCE_CHARS)
 
 
 class SettingsChanges(BaseModel):
@@ -47,7 +47,7 @@ class SettingsChanges(BaseModel):
     tagging_paused: Optional[bool] = None
     image_url: Optional[str] = Field(None, max_length=300)
     illustrations: Optional[bool] = None
-    pictures_per_page: Optional[int] = Field(None, ge=1, le=4)
+    pictures_per_page: Optional[int] = Field(None, ge=1, le=MAX_PICTURES_PER_PAGE)
 
     @field_validator('image_url')
     @classmethod
@@ -85,6 +85,7 @@ class Hub:
     def __init__(self):
         self.loop = None
         self.listeners = {}
+        self.closed = False
 
     def publish(self, book_id, event):
         if self.loop:
@@ -94,7 +95,16 @@ class Hub:
         for queue in self.listeners.get(book_id, ()):
             queue.put_nowait(event)
 
+    def close(self):
+        """End every stream, now and from here on. A stream never ends by itself, and the server cannot stop while a
+        connection is open."""
+        self.closed = True
+        if self.loop:
+            self.loop.call_soon_threadsafe(lambda: [q.put_nowait(None) for qs in self.listeners.values() for q in qs])
+
     async def stream(self, book_id, first):
+        if self.closed:
+            return
         queue = asyncio.Queue()
         self.listeners.setdefault(book_id, set()).add(queue)
         try:
@@ -102,6 +112,8 @@ class Hub:
             while True:
                 try:
                     event = await asyncio.wait_for(queue.get(), 15)
+                    if event is None:
+                        return
                     yield f'data: {json.dumps(event)}\n\n'
                 except asyncio.TimeoutError:
                     yield ': keep-alive\n\n'
@@ -124,7 +136,7 @@ def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers
         pipeline.shutdown()
 
     app = FastAPI(title='me-read', lifespan=lifespan)
-    app.state.store, app.state.pipeline = store, pipeline
+    app.state.store, app.state.pipeline, app.state.hub = store, pipeline, hub
 
     def found(row, what):
         if row is None:

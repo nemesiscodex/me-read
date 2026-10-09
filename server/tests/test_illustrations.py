@@ -59,7 +59,7 @@ def test_a_moment_and_the_looks_of_its_people_are_stored_and_announced(world):
     assert any(e['type'] == 'moments' and e['moments'][0]['id'] == moment['id'] for e in world.events)
     assert any(e['type'] == 'characters' and any(c['appearance'] for c in e['characters']) for e in world.events)
     prompt = world.ask.scene_prompts[0]
-    assert 'LAST ILLUSTRATION:\n(none)\n\nLIMIT: at most 2 pictures a page. A page here is about 6 paragraphs.\n\nEARLIER' in prompt
+    assert 'LAST ILLUSTRATION:\n(none)\n\nEARLIER' in prompt
     assert '[[p1]]Chapter One' in prompt
     assert f"c{tom['id']} | Tom | named | male teen | (not described yet)" in prompt and 'Narrator' not in prompt
     assert world.client.get('/api/usage').json()['all_time']['calls'] == 2
@@ -111,12 +111,13 @@ def test_a_portrait_is_drawn_first_and_becomes_the_reference_of_the_scene(world)
     tom, narrator = cast(world)['Tom'], cast(world)['Narrator']
     portrait, scene = world.draw.drawn
     assert (portrait['size'], portrait['references'], portrait['seed'], portrait['url']) == ((512, 512), [], tom['id'] * 1000, URL)
-    assert portrait['prompt'] == (images.STYLE + 'Portrait of a teenage boy: lanky boy in a patched grey cloak. '
-                                  'Head and shoulders, plain background.')
+    assert portrait['prompt'] == ('Close portrait of a teenage boy, head and shoulders only, the face large in the middle of the '
+                                  'picture: lanky boy in a patched grey cloak. Nothing below the chest is shown. '
+                                  'Plain background.' + images.STYLE)
     drawn = world.client.get(f"/api/characters/{tom['id']}/portrait")
     assert drawn.status_code == 200 and drawn.headers['content-type'] == 'image/png'
-    assert (scene['size'], scene['references']) == ((640, 432), [drawn.content])
-    assert scene['prompt'] == images.STYLE + 'Tom stands before a tall wooden gate at dusk. Tom is the person in image 1.'
+    assert (scene['size'], scene['references']) == (images.SCENE_SIZE, [drawn.content])
+    assert scene['prompt'] == 'Tom stands before a tall wooden gate at dusk. Tom is the person in image 1.' + images.STYLE
     [moment] = moments(world)
     assert moment['image_state'] == 'ready' and world.client.get(f"/api/moments/{moment['id']}/image").status_code == 200
     assert narrator['portrait_state'] == 'none' and world.client.get(f"/api/characters/{narrator['id']}/portrait").status_code == 404
@@ -144,7 +145,7 @@ def test_a_portrait_the_service_refuses_is_marked_and_the_scene_describes_the_pe
     world.draw.error = None
     world.drain()
     [scene] = world.draw.drawn
-    assert scene['references'] == [] and scene['prompt'].endswith('at dusk. Tom: lanky boy in a patched grey cloak.')
+    assert scene['references'] == [] and scene['prompt'].endswith('at dusk. Tom: lanky boy in a patched grey cloak.' + images.STYLE)
 
 
 def test_only_the_current_and_next_page_are_scanned_and_two_moments_a_page_are_drawn(world):
@@ -157,8 +158,9 @@ def test_only_the_current_and_next_page_are_scanned_and_two_moments_a_page_are_d
     assert prompt.count('[[p') == 7 and 'TEXT TO SCAN:\n[[p1]]“Who goes there?”' in prompt
     assert 'for context only:\nChapter One\nThe road was empty' in prompt
     found = moments(world) + moments(world, 1)
-    assert [(m['block_idx'], m['image_state']) for m in found] == [(2, 'ready'), (3, 'ready'), (4, 'none'), (5, 'ready')]
-    assert [d['prompt'].split('. ')[-1] for d in world.draw.drawn] == ['picture 1.', 'picture 2.', 'picture 4.']
+    assert [(m['block_idx'], m['image_state']) for m in found] == [
+        (2, 'ready'), (3, 'ready'), (4, 'none'), (5, 'ready'), (6, 'ready'), (7, 'none'), (8, 'none')], 'every moment is kept'
+    assert [d['prompt'] for d in world.draw.drawn] == [f'picture {n}.' + images.STYLE for n in (1, 2, 4, 5)]
 
     focus(world, 0, 8, current_first=5, current_last=8)
     world.drain()
@@ -166,18 +168,46 @@ def test_only_the_current_and_next_page_are_scanned_and_two_moments_a_page_are_d
     assert [m['image_state'] for m in moments(world)] == ['ready', 'ready', 'none', 'ready']
 
 
-@pytest.mark.parametrize('limit, line, found, drawn', [
-    (1, 'LIMIT: at most 1 picture a page. A page here is about 7 paragraphs.', 2, 1),
-    (3, 'LIMIT: at most 3 pictures a page. A page here is about 7 paragraphs.', 6, 3)])
-def test_the_reader_chooses_how_many_pictures_a_page_are_asked_for_and_drawn(world, limit, line, found, drawn):
+@pytest.mark.parametrize('limit, drawn', [(1, [5]), (3, [3, 5, 7])])
+def test_of_the_moments_on_a_page_the_most_important_are_drawn_in_reading_order(world, limit, drawn):
     illustrated(world, pictures_per_page=limit)
     world.ask.answer = lambda prompt: {'new_characters': [], 'lines': [{'q': n + 1, 'speaker': 'narrator'} for n in range(prompt.count('[[q'))]}
-    world.ask.scenes = everywhere
+    weight = {2: 4, 3: 8, 4: 1, 5: 10, 6: 2, 7: 8, 8: 3}
+    world.ask.scenes = lambda prompt: {**EMPTY, 'moments': [
+        {'p': n, 'title': f'Plate {n}', 'summary': f'what happens in {n}', 'scene': f'picture {n}', 'importance': weight[n + 1],
+         'characters': []} for n in range(1, 8)]}
     focus(world, 0, 8, current_first=2, current_last=8)
     world.drain()
-    assert line in world.ask.scene_prompts[0]
-    states = [m['image_state'] for m in moments(world) + moments(world, 1)]
-    assert states == ['ready'] * drawn + ['none'] * (found - drawn), 'twice the limit is kept, and the limit is drawn'
+    found = moments(world) + moments(world, 1)
+    assert [(m['block_idx'], m['title'], m['summary'], m['importance']) for m in found] == [
+        (idx, f'Plate {idx - 1}', f'what happens in {idx - 1}', weight[idx]) for idx in range(2, 9)]
+    assert [m['block_idx'] for m in found if m['image_state'] == 'ready'] == drawn
+    assert [d['prompt'] for d in world.draw.drawn] == [f'picture {idx - 1}.' + images.STYLE for idx in drawn]
+
+
+def test_a_library_from_before_importance_is_scanned_again_and_old_moments_take_the_new_words(world, tmp_path):
+    illustrated(world)
+    world.ask.scenes = at_the_gate
+    focus(world)
+    world.drain()
+    [old] = moments(world)
+    assert (old['title'], old['importance'], old['image_state']) == ('', 5, 'ready')
+    asked = len(world.ask.scene_prompts)
+    for column in 'title', 'summary', 'importance':
+        world.store.run(f'ALTER TABLE moment DROP COLUMN {column}')
+    upgraded = Store(world.store.home)
+    assert upgraded.one("SELECT COUNT(*) AS n FROM block WHERE scene_state = 'done'")['n'] == 0
+    world.ask.scenes = lambda prompt: {**EMPTY, 'moments': [
+        {'p': 3, 'title': 'At the gate', 'summary': 'Tom reaches the gate.', 'scene': 'Dusk, outdoors. One person.',
+         'importance': 9, 'characters': []},
+        {'p': 5, 'title': 'The long wait', 'summary': 'Nobody speaks.', 'scene': 'Night, outdoors.', 'importance': 3, 'characters': []}]}
+    focus(world)
+    world.drain()
+    assert len(world.ask.scene_prompts) > asked
+    first, second = moments(world)
+    assert (first['id'], first['title'], first['scene'], first['importance'], first['image_state'], first['character_ids']) == (
+        old['id'], 'At the gate', 'Dusk, outdoors. One person.', 9, 'ready', old['character_ids']), 'the picture is kept'
+    assert (second['block_idx'], second['title']) == (4, 'The long wait')
 
 
 def test_the_end_of_a_picture_is_a_moment_that_is_never_drawn_and_never_counted(world):
@@ -383,11 +413,11 @@ def test_the_image_service_address_is_checked_and_tidied(world):
     assert (saved['image_url'], saved['illustrations']) == ('', False)
 
 
-def test_pictures_a_page_is_two_until_changed_and_stays_between_one_and_four(world):
+def test_pictures_a_page_is_two_until_changed_and_stays_between_one_and_twelve(world):
     assert world.client.get('/api/settings').json()['pictures_per_page'] == 2
-    assert world.client.put('/api/settings', json={'pictures_per_page': 4}).json()['pictures_per_page'] == 4
-    assert [world.client.put('/api/settings', json={'pictures_per_page': n}).status_code for n in (0, 5)] == [422, 422]
-    assert world.client.get('/api/settings').json()['pictures_per_page'] == 4
+    assert world.client.put('/api/settings', json={'pictures_per_page': 12}).json()['pictures_per_page'] == 12
+    assert [world.client.put('/api/settings', json={'pictures_per_page': n}).status_code for n in (0, 13)] == [422, 422]
+    assert world.client.get('/api/settings').json()['pictures_per_page'] == 12
 
 
 # Starring a paragraph by hand
@@ -427,9 +457,8 @@ def test_starring_a_paragraph_asks_once_what_it_shows_and_draws_it_though_it_is_
     assert tom['appearance'] == 'lanky boy in a patched grey cloak'
     world.drain()
     assert moments(world)[0]['image_state'] == 'ready'
-    assert [d['prompt'].split('. ')[0] for d in world.draw.drawn] == [
-        images.STYLE.split('. ')[0], images.STYLE.split('. ')[0]], 'the portrait, then the scene'
-    assert world.draw.drawn[-1]['prompt'].startswith(images.STYLE + 'The gate swings open before Tom.')
+    assert [d['prompt'].split(' ')[0] for d in world.draw.drawn] == ['Close', 'The'], 'the portrait, then the scene'
+    assert world.draw.drawn[-1]['prompt'].startswith('The gate swings open before Tom.')
     assert star(world, 4).json()['starred'] is True and len(world.ask.star_prompts) == 1, 'starring twice asks once'
 
 
@@ -444,7 +473,7 @@ def test_starred_pictures_are_drawn_first_and_take_no_place_on_their_page(world)
     assert star(world, 0).status_code == 200 and star(world, 7).status_code == 200
     world.client.post(f"/api/moments/{moments(world)[1]['id']}/redraw")
     assert world.pipeline.image_step()
-    assert world.draw.drawn[-1]['prompt'].endswith('starred picture.'), 'before the picture of the page in view'
+    assert world.draw.drawn[-1]['prompt'].endswith('starred picture.' + images.STYLE), 'before the picture of the page in view'
     world.drain()
     assert [(m['block_idx'], m['starred'], m['image_state']) for m in moments(world) + moments(world, 1)] == [
         (0, True, 'ready'), (1, False, 'ready'), (2, False, 'none'), (7, True, 'ready')]

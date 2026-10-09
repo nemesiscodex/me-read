@@ -151,7 +151,7 @@
   position: relative;
   height: 100%;
   max-width: 100%;
-  aspect-ratio: 640 / 432;
+  aspect-ratio: 896 / 608;
   overflow: hidden;
   border-radius: 3px;
   background: var(--wash) center / cover;
@@ -170,11 +170,63 @@
 
 .scene-frame img[data-loaded] {
   opacity: 1;
+  cursor: zoom-in;
+}
+
+.scene-enlarge {
+  left: 0.35rem;
+}
+
+.scene-title {
+  position: absolute;
+  top: 0.35rem;
+  left: 0.35rem;
+  max-width: calc(100% - 0.7rem);
+  margin: 0;
+  padding: 0.2em 0.6em;
+  overflow: hidden;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--paper-raised) 88%, transparent);
+  color: var(--ink-soft);
+  font-family: var(--serif);
+  font-size: 0.8rem;
+  font-style: italic;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.scene-frame:hover .scene-title {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .scene-title {
+    opacity: 0.85;
+  }
+}
+
+.scene-zoom-title {
+  position: absolute;
+  top: 0.75rem;
+  left: 1rem;
+  margin: 0;
+  color: #f3ede2;
+  font-family: var(--serif);
+  font-size: 1rem;
+  font-style: italic;
+  text-shadow: 0 1px 3px rgb(0 0 0 / 0.9);
+  pointer-events: none;
 }
 
 .scene-redraw {
-  position: absolute;
   right: 0.35rem;
+}
+
+.scene-enlarge,
+.scene-redraw {
+  position: absolute;
   bottom: 0.35rem;
   padding: 0.2em 0.6em;
   border: 0;
@@ -186,20 +238,80 @@
   transition: opacity 0.15s;
 }
 
+.scene-frame:hover .scene-enlarge,
 .scene-frame:hover .scene-redraw,
+.scene-enlarge:focus-visible,
 .scene-redraw:focus-visible,
 .scene-redraw[data-failed] {
   opacity: 1;
 }
 
+.scene-enlarge:hover,
 .scene-redraw:hover:not(:disabled) {
   color: var(--ink);
 }
 
 @media (hover: none) {
+  .scene-enlarge,
   .scene-redraw {
     opacity: 0.85;
   }
+}
+
+.scene-zoom {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  background: #14110e;
+  cursor: zoom-out;
+}
+
+.scene-zoom img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.scene-caption {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  margin: 0;
+  padding: 3rem max(1.5rem, 12vw) 2.2rem;
+  background: linear-gradient(transparent, rgb(0 0 0 / 0.78) 45%);
+  color: #f6f1e7;
+  font-family: var(--serif, Georgia, serif);
+  font-size: clamp(1.05rem, 2.1vw, 1.7rem);
+  line-height: 1.4;
+  text-align: center;
+  text-wrap: balance;
+  text-shadow: 0 1px 3px rgb(0 0 0 / 0.9);
+  pointer-events: none;
+}
+
+.scene-caption-speaker {
+  display: block;
+  margin-bottom: 0.25em;
+  font-family: var(--sans, system-ui, sans-serif);
+  font-size: 0.6em;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.75;
+}
+
+.scene-zoom-close {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  padding: 0.3em 0.8em;
+  border: 0;
+  border-radius: 5px;
+  background: rgb(255 255 255 / 0.14);
+  color: #f3ede2;
+  font-size: 0.9rem;
 }
 
 .columns {

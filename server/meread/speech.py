@@ -27,14 +27,40 @@ AGE_GENDER = {('child', 'male'): 'A little boy', ('child', 'female'): 'A little 
               ('teen', 'male'): 'A teenage boy', ('teen', 'female'): 'A teenage girl',
               ('adult', 'male'): 'An adult man', ('adult', 'female'): 'An adult woman',
               ('elderly', 'male'): 'An elderly man', ('elderly', 'female'): 'An elderly woman'}
-PITCH = {'low': 'a deep, low-pitched voice', 'medium': 'a medium-pitched voice', 'high': 'a bright, high-pitched voice'}
+PITCH = {'low': 'a low, deep voice', 'medium': 'a medium-pitched voice', 'high': 'a high, bright voice'}
+# Semitones a new sample is moved by when it sounds like a voice the book already has, mildest first.
+SHIFTS = 0, -2, 2, -3, 3
+# How alike two samples are to the cloning model, from 0 to 1, above which they pass for one person. Two samples
+# designed from the same description score about 0.9, two different men about 0.7.
+SAME_VOICE = 0.85
 
 
 def voice_instruction(character):
     """The plain-language voice description the designer model works from."""
     who = AGE_GENDER.get((character['age'], character['gender']), AGE[character['age']])
     detail = character['description'].strip().rstrip('.')
-    return f"{who} with {PITCH[character['pitch']]}, speaking clearly at a natural pace." + (f' {detail}.' if detail else '')
+    # Short and about the sound only: with a sentence every voice shares, the designer returns much the same voice.
+    return f"{who} with {PITCH[character['pitch']]}." + (f' {detail[0].upper()}{detail[1:]}.' if detail else '')
+
+
+def shifted(audio, semitones):
+    """The audio played slower or faster, which moves pitch and timbre together, as a larger or smaller speaker would."""
+    if not semitones:
+        return audio
+    return np.interp(np.arange(0, len(audio) - 1, 2 ** (semitones / 12)), np.arange(len(audio)), audio).astype('float32')
+
+
+def most_distinct(shifts, alike):
+    """The first shift at which the sample no longer passes for a voice already in use, or the least alike of them all.
+
+    `alike(shift)` is how alike the shifted sample is to the closest existing voice.
+    """
+    scores = {}
+    for shift in shifts:
+        scores[shift] = alike(shift)
+        if scores[shift] < SAME_VOICE:
+            return shift
+    return min(scores, key=scores.get)
 
 
 def trim(audio, rate, threshold=0.01, before=0.03, after=0.12):
@@ -72,7 +98,7 @@ class Engine:
         os.environ.setdefault('TQDM_DISABLE', '1')
         os.environ.setdefault('TRANSFORMERS_VERBOSITY', 'error')
         self.chatterbox = self.multilingual = self.designer = None
-        self.voices = {}
+        self.voices, self.speakers = {}, {}
 
     def _snapshot(self, repo):
         from huggingface_hub import snapshot_download
@@ -90,8 +116,12 @@ class Engine:
         mx.clear_cache()
         return np.concatenate(parts).astype('float32')
 
-    def design(self, instruction, seed, language='en'):
-        """A voice sample of about 15 seconds matching `instruction`, spoken in `language`, as (audio, rate)."""
+    def design(self, instruction, seed, language='en', others=()):
+        """A voice sample of about 15 seconds matching `instruction`, spoken in `language`, as (audio, rate).
+
+        `others` are the samples of the voices already in use. The designer tends to return the same few voices, so a
+        sample the cloning model would take for one of them is shifted until it is not.
+        """
         import mlx.core as mx
         from mlx_audio.tts.utils import load_model
         if self.designer is None:
@@ -103,7 +133,42 @@ class Engine:
         audio = trim(audio, rate)[:SAMPLE_SECONDS * rate]
         if len(audio) < MIN_SAMPLE_SECONDS * rate:
             raise RuntimeError('the designed voice sample came out too short')
-        return audio, rate
+        return self._apart(audio, rate, [path for path in others if os.path.exists(path)], language), rate
+
+    def _cloner(self, language):
+        from mlx_audio.tts.utils import load_model
+        if language == 'en':
+            if self.chatterbox is None:
+                self._snapshot(TOKENIZER)
+                self.chatterbox = load_model(self._snapshot(CHATTERBOX))
+            return self.chatterbox
+        if self.multilingual is None:
+            self._snapshot(TOKENIZER)
+            self.multilingual = load_model(self._snapshot(MULTILINGUAL))
+        return self.multilingual
+
+    def _speaker(self, model, audio, rate):
+        """Who the cloning model hears in the audio, as a unit vector."""
+        from mlx_audio.utils import resample_audio
+        heard = np.asarray(model.ve.embeds_from_wavs([resample_audio(audio, rate, 16000)], sample_rate=16000))
+        heard = heard.mean(axis=0).flatten().astype('float64')
+        return heard / np.linalg.norm(heard)
+
+    def _apart(self, audio, rate, others, language):
+        if not others:
+            return audio
+        model = self._cloner(language)
+        known = []
+        for path in others:
+            key = (language == 'en', str(path), os.path.getmtime(path))
+            if key not in self.speakers:
+                other, other_rate = sf.read(path, dtype='float32', always_2d=True)
+                self.speakers[key] = self._speaker(model, other.mean(axis=1), other_rate)
+            known.append(self.speakers[key])
+        # A shift up shortens the sample, and the cloning model needs a few seconds of it.
+        shifts = [s for s in SHIFTS if len(audio) / 2 ** (s / 12) >= MIN_SAMPLE_SECONDS * rate]
+        shift = most_distinct(shifts, lambda s: float((np.array(known) @ self._speaker(model, shifted(audio, s), rate)).max()))
+        return shifted(audio, shift)
 
     def _voice(self, model, voice_path, prepare):
         key = (model, str(voice_path), os.path.getmtime(voice_path))
@@ -114,11 +179,7 @@ class Engine:
         return self.voices[key]
 
     def _english(self, voice_path):
-        from mlx_audio.tts.utils import load_model
-        if self.chatterbox is None:
-            self._snapshot(TOKENIZER)
-            self.chatterbox = load_model(self._snapshot(CHATTERBOX))
-        model = self.chatterbox
+        model = self._cloner('en')
 
         def prepare():
             model.prepare_conditionals(str(voice_path), exaggeration=0, norm_loudness=True)
@@ -127,11 +188,7 @@ class Engine:
         return model, lambda text: model.generate(text=text, temperature=0.8, top_p=0.95, top_k=1000, repetition_penalty=1.2)
 
     def _other(self, voice_path, language):
-        from mlx_audio.tts.utils import load_model
-        if self.multilingual is None:
-            self._snapshot(TOKENIZER)
-            self.multilingual = load_model(self._snapshot(MULTILINGUAL))
-        model = self.multilingual
+        model = self._cloner(language)
         conds = self._voice('multilingual', voice_path, lambda: model.prepare_conditionals(str(voice_path), 24000))
         return model, lambda text: model.generate(text=text, conds=conds, lang_code=language)
 
