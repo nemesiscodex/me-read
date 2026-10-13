@@ -1,4 +1,5 @@
-"""Local speech: design a 15 second voice sample from a description, and speak text in a sampled voice."""
+"""Local speech: design a 15 second voice sample from a description, direct it into emotion takes, and speak text in
+a sampled voice."""
 import hashlib
 import http.client
 import io
@@ -18,10 +19,13 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
+from .emotions import DIRECTIONS
+
 CHATTERBOX = 'mlx-community/chatterbox-turbo-8bit'
 TOKENIZER = 'mlx-community/S3TokenizerV2'
 DESIGNER = 'mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit'
 MULTILINGUAL = 'mlx-community/chatterbox-8bit'
+BREEZE = 'mlx-community/Breeze-TTS-2-mlx-4bit'
 TRANSCRIBER = 'mlx-community/whisper-large-v3-turbo-asr-fp16'
 TRANSCRIBER_REVISION = '624c19c9af5603fa73b83bce14d4aeea96156d18'
 TRANSCRIPTION_POLICY = 'whisper-auto-language-16khz-v1'
@@ -57,7 +61,7 @@ class Provider:
 PROVIDERS = {
     'chatterbox': Provider('chatterbox', (CHATTERBOX, MULTILINGUAL, TOKENIZER), None, 'conditionals'),
     'fish': Provider('fish', ('mlx-community/fish-audio-s2-pro-8bit',), None, 'waveform'),
-    'breeze': Provider('breeze', ('mlx-community/Breeze-TTS-2-mlx-4bit',), ('en',), 'path'),
+    'breeze': Provider('breeze', (BREEZE,), ('en',), 'path'),
     'breeze-gguf': Provider('breeze-gguf', ('cstr/breeze-tts-2-GGUF@q4_k',), ('en',), 'remote'),
 }
 
@@ -295,7 +299,8 @@ def decode_wav(data):
 
 
 class Engine:
-    """A selected local narrator and the shared Qwen3 voice designer. One worker owns all model calls."""
+    """A selected local narrator, the shared Qwen3 voice designer and the Breeze voice director. One worker owns all
+    model calls."""
 
     def __init__(self, models_dir, tts_provider='chatterbox', tts_url=None, tts_consent=None):
         self.provider = PROVIDERS[tts_provider]
@@ -305,7 +310,7 @@ class Engine:
         os.environ['HF_HUB_CACHE'] = str(self.hub)
         os.environ.setdefault('TQDM_DISABLE', '1')
         os.environ.setdefault('TRANSFORMERS_VERBOSITY', 'error')
-        self.chatterbox = self.multilingual = self.designer = self.narrator = None
+        self.chatterbox = self.multilingual = self.designer = self.narrator = self.director = None
         self.voices, self.speakers, self.transcripts, self.uploads = {}, {}, {}, {}
 
     @property
@@ -355,6 +360,35 @@ class Engine:
         if len(audio) < MIN_SAMPLE_SECONDS * rate:
             raise RuntimeError('the designed voice sample came out too short')
         return self._apart(audio, rate, [path for path in others if os.path.exists(path)], language), rate
+
+    def direct(self, voice_path, emotion, seed):
+        """A take of about 15 seconds of the saved voice saying the emotion's script the way the emotion asks, as
+        (audio, rate). Breeze directs it on this Mac whichever narrator reads the book."""
+        import mlx.core as mx
+        from mlx_audio.tts.utils import load_model
+        instruction, script = DIRECTIONS[emotion]
+        wav = Path(voice_path).read_bytes()
+        # The Breeze narrator is the director already; a second copy would only take memory.
+        if self.provider.models[0] == BREEZE:
+            if self.narrator is None:
+                self.narrator = load_model(self._snapshot(BREEZE))
+            director = self.narrator
+        else:
+            if self.director is None:
+                self.director = load_model(self._snapshot(BREEZE))
+            director = self.director
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'reference.wav'
+            path.write_bytes(wav)
+            transcript = self._transcript(path, hashlib.sha256(wav).hexdigest())
+            mx.random.seed(seed)
+            results = director.generate(text=script, instruct=instruction, ref_audio=str(path), ref_text=transcript,
+                                        cfg_scale=4.0, seed=seed, stream=False)
+            audio, rate = self._generate(results, director.sample_rate)
+        audio = trim(audio, rate)[:SAMPLE_SECONDS * rate]
+        if len(audio) < MIN_SAMPLE_SECONDS * rate:
+            raise RuntimeError(f'the {emotion} take came out too short')
+        return audio, rate
 
     def _cloner(self, language):
         from mlx_audio.tts.utils import load_model

@@ -5,7 +5,7 @@ import threading
 from pathlib import Path
 
 from . import epub, segment
-from .emotions import EMOTIONS
+from .emotions import DIRECTIONS, EMOTIONS
 
 EMOTION = f"TEXT NOT NULL DEFAULT 'neutral' CHECK (emotion IN ({', '.join(repr(e) for e in EMOTIONS)}))"
 SCHEMA = f"""
@@ -63,12 +63,19 @@ CREATE TABLE IF NOT EXISTS moment_character (
   character_id INTEGER NOT NULL REFERENCES character(id) ON DELETE CASCADE, pos INTEGER NOT NULL,
   PRIMARY KEY (moment_id, character_id));
 CREATE INDEX IF NOT EXISTS moment_character_of ON moment_character (character_id);
+CREATE TABLE IF NOT EXISTS voice_take (
+  character_id INTEGER NOT NULL REFERENCES character(id) ON DELETE CASCADE,
+  emotion TEXT NOT NULL CHECK (emotion IN ({', '.join(repr(e) for e in DIRECTIONS)})),
+  state TEXT NOT NULL DEFAULT 'none' CHECK (state IN ('none', 'queued', 'making', 'ready', 'failed')),
+  rev INTEGER NOT NULL DEFAULT 0, made_from INTEGER, error TEXT, PRIMARY KEY (character_id, emotion));
 """
 SEGMENT = 'id, block_id, seq, text, kind, character_id, emotion, audio_state, audio_rev, duration, error'
 CHARACTER = ('c.id, c.book_id, c.name, c.role, c.gender, c.age, c.pitch, c.description, c.voice_state, c.voice_rev, '
              'c.error, c.draft_state, c.draft_rev, c.appearance, c.portrait_state, c.portrait_rev, c.portrait_error, (SELECT COUNT(*) FROM segment s WHERE s.character_id = c.id AND s.kind = \'speech\') AS line_count')
 MOMENT = ('m.id, m.block_id, m.block_idx, m.kind, m.title, m.summary, m.scene, m.importance, m.image_state, m.image_rev, '
           'm.error, m.starred')
+# A take is made from one revision of the character's voice. Once the voice is replaced, the take counts as never made.
+TAKE_STATE = "CASE WHEN t.state IN ('ready', 'failed') AND t.made_from != c.voice_rev THEN 'none' ELSE t.state END"
 # The moments a character is drawn in.
 FEATURING = 'm.id IN (SELECT moment_id FROM moment_character WHERE character_id = ?)'
 FIELDS = ('name', 'gender', 'age', 'pitch', 'description', 'appearance')
@@ -123,6 +130,7 @@ class Store:
         self.run("UPDATE block SET scene_state = 'pending' WHERE scene_state = 'scanning'")
         self.run("UPDATE character SET portrait_state = 'none' WHERE portrait_state = 'drawing'")
         self.run("UPDATE moment SET image_state = 'none' WHERE image_state = 'drawing'")
+        self.run("UPDATE voice_take SET state = 'queued' WHERE state = 'making'")
 
     def run(self, sql, args=()):
         with self.lock:
@@ -165,6 +173,9 @@ class Store:
 
     def draft_path(self, character):
         return self.book_dir(character['book_id']) / 'voices' / f"{character['id']}.draft.wav"
+
+    def take_path(self, character, emotion):
+        return self.book_dir(character['book_id']) / 'voices' / f"{character['id']}.{emotion}.wav"
 
     def audio_path(self, book_id, segment_id):
         return self.book_dir(book_id) / 'audio' / f'{segment_id}.flac'
@@ -327,6 +338,18 @@ class Store:
             self.run("UPDATE character SET voice_state = 'none', voice_rev = voice_rev + 1, error = NULL WHERE id = ?",
                      (character_id,))
             self.invalidate_audio('character_id = ?', (character_id,))
+
+    def take(self, character_id, emotion):
+        """The character's take in an emotion: its emotion, state and revision."""
+        return self.one(f'SELECT t.emotion, {TAKE_STATE} AS state, t.rev FROM voice_take t '
+                        'JOIN character c ON c.id = t.character_id WHERE t.character_id = ? AND t.emotion = ?',
+                        (character_id, emotion)) or {'emotion': emotion, 'state': 'none', 'rev': 0}
+
+    def request_take(self, character_id, emotion):
+        """Have a take made now, or made again. Once it is ready, the lines read in it are read again."""
+        self.run("INSERT INTO voice_take (character_id, emotion, state) VALUES (?, ?, 'queued') "
+                 "ON CONFLICT (character_id, emotion) DO UPDATE SET state = 'queued', rev = rev + 1, error = NULL",
+                 (character_id, emotion))
 
     def merge_character(self, character_id, into):
         with self.lock:

@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
 from . import epub, scenes, speech, tagger
-from .emotions import EMOTIONS
+from .emotions import DIRECTIONS, EMOTIONS
 from .pipeline import Pipeline
 from .store import FEATURING, MAX_PICTURES_PER_PAGE, Store, illustrating
 
@@ -435,6 +435,8 @@ def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers
         store.voice_path(character).unlink(missing_ok=True)
         store.draft_path(character).unlink(missing_ok=True)
         store.portrait_path(character).unlink(missing_ok=True)
+        for emotion in DIRECTIONS:
+            store.take_path(character, emotion).unlink(missing_ok=True)
         announce(character['book_id'], 'character_id = ?', (body.into,))
         announce_moments(character['book_id'], FEATURING, (body.into,))
 
