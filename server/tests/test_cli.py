@@ -25,7 +25,7 @@ def test_help_lists_registry_choices_and_creates_no_library(tmp_path, monkeypatc
     help_text = ' '.join(capsys.readouterr().out.split())
     assert '--tts-provider {chatterbox,fish,breeze,breeze-gguf}' in help_text
     assert 'default: chatterbox' in help_text and 'breeze is English-only' in help_text
-    assert '--tts-url' in help_text and 'for example http://HOST:8781' in help_text and 'you may use the reference voices' in help_text
+    assert '--tts-url' in help_text and 'for example http://127.0.0.1:8781' in help_text and 'you may use the reference voices' in help_text
     assert not home.exists()
 
 
@@ -78,33 +78,50 @@ def test_breeze_gguf_refuses_missing_or_bad_settings_before_creating_a_library(t
 
 
 @pytest.mark.parametrize('narrator', [[], ['--tts-provider', 'chatterbox'], ['--tts-provider', 'fish'], ['--tts-provider', 'breeze']])
-@pytest.mark.parametrize('flag', [['--tts-url', 'http://127.0.0.1:8781'], ['--tts-consent', CONSENT]])
-def test_remote_flags_are_an_error_with_any_other_narrator(tmp_path, monkeypatch, capsys, narrator, flag):
+@pytest.mark.parametrize('flag, message', [(['--tts-url', 'http://127.0.0.1:8781'], '--tts-consent is required with --tts-url'),
+                                           (['--tts-consent', CONSENT], '--tts-url is required')])
+def test_a_url_needs_consent_and_consent_needs_a_url_with_any_narrator(tmp_path, monkeypatch, capsys, narrator, flag, message):
     home = tmp_path / 'library'
     monkeypatch.setattr(__main__, 'create_app', lambda *args, **kwargs: pytest.fail('an app was created'))
     monkeypatch.setattr(sys, 'argv', ['meread', '--home', str(home), *narrator, *flag])
     with pytest.raises(SystemExit) as exited:
         __main__.main()
     assert exited.value.code == 2
-    assert '--tts-url and --tts-consent apply only to --tts-provider breeze-gguf' in capsys.readouterr().err
+    assert message in capsys.readouterr().err
     assert not home.exists()
 
 
-def test_breeze_gguf_wires_the_server_and_logs_its_host_but_never_the_consent(tmp_path, monkeypatch, caplog):
+@pytest.mark.parametrize('provider, narration', [
+    ('chatterbox', 'the speech service at 127.0.0.1:8781'),
+    ('breeze-gguf', 'the speech service at 127.0.0.1:8781'),
+    ('fish', 'this Mac with mlx-community/fish-audio-s2-pro-8bit'),
+    ('breeze', 'this Mac with mlx-community/Breeze-TTS-2-mlx-4bit'),
+])
+def test_every_narrator_wires_the_speech_service_and_logs_where_work_runs_but_never_the_consent(
+        tmp_path, monkeypatch, caplog, provider, narration):
     apps = []
     caplog.set_level(logging.INFO)
     monkeypatch.setattr(speech.Engine, '_snapshot', forbid_snapshot)
     monkeypatch.setattr(uvicorn.Server, 'run', lambda self: apps.append(self.config.app))
-    monkeypatch.setattr(sys, 'argv', ['meread', '--home', str(tmp_path), '--tts-provider', 'breeze-gguf',
+    monkeypatch.setattr(sys, 'argv', ['meread', '--home', str(tmp_path), '--tts-provider', provider,
                                       '--tts-url', 'http://127.0.0.1:8781', '--tts-consent', CONSENT])
     __main__.main()
     engine = apps[0].state.pipeline.engine
     assert engine.remote.host == '127.0.0.1:8781'
-    assert engine.narrator is engine.chatterbox is engine.multilingual is engine.designer is None
+    assert engine.narrator is engine.chatterbox is engine.multilingual is engine.designer is engine.breeze is None
     identity = json.loads(apps[0].state.store.one('SELECT identity FROM generation_identity')['identity'])
-    assert identity == speech.PROVIDERS['breeze-gguf'].identity
-    assert 'Narrator breeze-gguf on 127.0.0.1:8781' in caplog.text
+    assert identity == speech.PROVIDERS[provider].identity
+    assert (f'Narrator {provider} on {narration},' in caplog.text and
+            'voice design, emotion takes and speaker comparison on the speech service at 127.0.0.1:8781' in caplog.text)
     assert CONSENT not in caplog.text
+
+
+def test_without_a_url_everything_is_logged_as_running_on_this_mac(tmp_path, monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+    monkeypatch.setattr(speech.Engine, '_snapshot', forbid_snapshot)
+    create_app(tmp_path, run_workers=False)
+    assert f'Narrator chatterbox on this Mac with {speech.CHATTERBOX},' in caplog.text
+    assert 'voice design, emotion takes and speaker comparison on this Mac' in caplog.text
 
 
 def test_identity_reconciliation_is_complete_before_workers_start(tmp_path, monkeypatch):
