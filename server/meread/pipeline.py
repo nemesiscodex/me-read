@@ -220,6 +220,8 @@ class Pipeline:
 
     def speech_step(self):
         """Generate the next missing clip in focus, designing its voice or making its take first when needed."""
+        if time.monotonic() < self.retry_at.get('speech', 0):
+            return False
         draft = self.store.one("SELECT id FROM character WHERE draft_state = 'queued' ORDER BY id LIMIT 1")
         if draft:
             self.design_draft(self.store.character(draft['id']))
@@ -232,8 +234,6 @@ class Pipeline:
             return True
         focus = self.focus
         if not focus:
-            return False
-        if time.monotonic() < self.retry_at.get('speech', 0):
             return False
         book_id = focus['book_id']
         provider = getattr(self.engine, 'provider', None)
@@ -300,6 +300,12 @@ class Pipeline:
                 os.unlink(tmp)
         return False
 
+    def _wait_for_speech(self, error, what):
+        """Leave the speech worker idle for a while after the speech service did not answer."""
+        log.warning('the speech server is unavailable for %s: %s', what, error)
+        self.idle['speech'] = 'The speech server is unavailable; trying again shortly'
+        self.retry_at['speech'] = time.monotonic() + SPEECH_RETRY
+
     def _other_voices(self, character):
         return [self.store.voice_path(c) for c in self.store.characters(character['book_id'])
                 if c['id'] != character['id'] and c['voice_state'] == 'ready']
@@ -319,6 +325,10 @@ class Pipeline:
             self._land(lambda tmp: sf.write(tmp, audio, rate, format='WAV'), self.store.voice_path(character),
                        lambda: self.store.run("UPDATE character SET voice_state = 'ready' WHERE id = ? AND voice_rev = ? "
                                               "AND voice_state = 'designing'", (character['id'], rev)).rowcount)
+        except speech.Unavailable as e:
+            self._wait_for_speech(e, f"{character['name']}'s voice")
+            self.store.run("UPDATE character SET voice_state = 'none' WHERE id = ? AND voice_rev = ? "
+                           "AND voice_state = 'designing'", (character['id'], rev))
         except Exception as e:
             log.exception('voice design failed for %s', character['name'])
             self.store.run("UPDATE character SET voice_state = 'failed', error = ? WHERE id = ? AND voice_rev = ? "
@@ -340,6 +350,10 @@ class Pipeline:
             self._land(lambda tmp: sf.write(tmp, audio, rate, format='WAV'), self.store.draft_path(character),
                        lambda: self.store.run("UPDATE character SET draft_state = 'ready' WHERE id = ? AND draft_rev = ? "
                                               "AND draft_state = 'designing'", (character['id'], rev)).rowcount)
+        except speech.Unavailable as e:
+            self._wait_for_speech(e, f"{character['name']}'s candidate voice")
+            self.store.run("UPDATE character SET draft_state = 'queued' WHERE id = ? AND draft_rev = ? "
+                           "AND draft_state = 'designing'", (character['id'], rev))
         except Exception:
             log.exception('candidate voice failed for %s', character['name'])
             self.store.run("UPDATE character SET draft_state = 'failed' WHERE id = ? AND draft_rev = ? "
@@ -369,6 +383,9 @@ class Pipeline:
                 where = "character_id = ? AND emotion = ? AND kind = 'speech'", (character_id, emotion)
                 self.store.invalidate_audio(*where)
                 self._publish_segments(book_id, *where)
+        except speech.Unavailable as e:
+            self._wait_for_speech(e, f"{character['name']}'s {emotion} take")
+            settle('queued')
         except Exception as e:
             log.exception('the %s take failed for %s', emotion, character['name'])
             settle('failed', str(e)[:300])
@@ -395,11 +412,9 @@ class Pipeline:
                        lambda: self.store.run("UPDATE segment SET audio_state = 'ready', duration = ? WHERE id = ? "
                                               "AND audio_rev = ? AND audio_state = 'generating'", (duration, *claim)).rowcount)
         except speech.Unavailable as e:
-            log.warning('the speech server is unavailable for segment %s: %s', seg['id'], e)
+            self._wait_for_speech(e, f"segment {seg['id']}")
             self.store.run("UPDATE segment SET audio_state = 'none' WHERE id = ? AND audio_rev = ? "
                            "AND audio_state = 'generating'", claim)
-            self.idle['speech'] = 'The speech server is unavailable; trying again shortly'
-            self.retry_at['speech'] = time.monotonic() + SPEECH_RETRY
         except Exception as e:
             log.exception('speech failed for segment %s', seg['id'])
             self.store.run("UPDATE segment SET audio_state = 'failed', error = ? WHERE id = ? AND audio_rev = ? "
