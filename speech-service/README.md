@@ -10,7 +10,7 @@ Built and tested on Linux with an AMD Radeon (gfx1030, 16 GB) and ROCm 6.4. One 
 
 With it, a request that names a voice uses that voice's WAV from `--voice-dir` and the transcript in the request or in the `<name>.txt` beside it. The decoded WAV is cached by the SHA-256 of its bytes, at most 16 at a time. A voice that cannot be read, or has no transcript, fails the request. It never falls back to another voice. The watermark, provenance record and consent code are untouched.
 
-Breeze's own voice design from a description is not available in this runtime, so me-read designs new voices locally with Qwen and this server only clones them.
+Breeze's own voice design from a description is not available in this runtime, so me-read designs new English voices and makes their emotion takes locally with Breeze, and this server only clones them.
 
 ## Build
 
