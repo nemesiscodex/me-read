@@ -47,12 +47,12 @@ def fields_of(content_type, body):
 
 
 class SpeechServer:
-    """Emulates the speech server's contract as tested: named voices, consent, a transcript per voice, WAV replies."""
+    """Emulates the speech server's contract as tested: named voices, consent, a transcript per Breeze request, WAV replies."""
 
     def __init__(self):
         self.url = None
         self.consent = CONSENT
-        self.voices, self.transcripts = {}, {}
+        self.voices = {}
         self.paths, self.uploads, self.speeches = [], [], []
         self.upload_failures, self.speech_failures = [], []
         self.sample_rate, self.reply, self.broken = 24000, None, False
@@ -87,7 +87,7 @@ class SpeechServer:
         name = fields['name']
         if name in self.voices:
             return failure(409, 'voice_exists', 'a voice with that name already exists')
-        self.voices[name], self.transcripts[name] = fields['voice'], fields.get('transcript', '')
+        self.voices[name] = fields['voice']
         return 201, json.dumps({'format': 'wav', 'name': name}).encode(), 'application/json', {}
 
     def synthesize(self, body):
@@ -105,8 +105,10 @@ class SpeechServer:
         if voice is None:
             headers = {} if self.design_disclaimer is None else {'X-Crispasr-Spoken-Disclaimer': self.design_disclaimer}
             return 200, wav_bytes(self.sample_rate, seconds=20), 'audio/wav', headers
-        if self.broken or voice not in self.voices or not self.transcripts.get(voice):
-            return failure(500, 'synthesis_failed', 'the voice is unknown or has no transcript')
+        if model == 'breeze' and not body.get('ref_text'):
+            return failure(400, 'ref_text_required', 'a Breeze clone needs the transcript of its voice')
+        if self.broken or voice not in self.voices:
+            return failure(500, 'synthesis_failed', 'the voice is unknown')
         # A take is a 15 second direction of the voice; a line is short.
         default = wav_bytes(self.sample_rate, seconds=20 if body.get('instructions') else 0.5)
         reply = self.replies.pop(0) if self.replies else self.reply if self.reply is not None else default
@@ -207,9 +209,8 @@ def test_speech_request_carries_transcript_consent_seed_and_disclaimer_off(tmp_p
     assert speech_server.speeches == [{
         'model': 'breeze', 'input': 'Hello there.', 'voice': name_for(voice.read_bytes()), 'ref_text': 'The saved words.', 'seed': 77,
         'response_format': 'wav', 'consent_attestation': CONSENT, 'spoken_disclaimer': False}]
-    upload = speech_server.uploads[0]
-    assert (upload['transcript'], upload['consent_attestation'], upload['name']) == (
-        'The saved words.', CONSENT, name_for(voice.read_bytes()))
+    assert speech_server.uploads == [{'voice': voice.read_bytes(), 'name': name_for(voice.read_bytes()),
+                                      'consent_attestation': CONSENT}]
     assert float(models.transcribed[0].mean()) == pytest.approx(0.1, abs=0.0001)
 
 
@@ -644,8 +645,7 @@ def test_a_take_is_directed_by_breeze_on_the_service_from_the_uploaded_voice_and
     audio, rate = engine.direct(voice, 'angry', 9)
     instruction, script = DIRECTIONS['angry']
     wav = voice.read_bytes()
-    assert speech_server.uploads == [{'voice': wav, 'name': name_for(wav), 'consent_attestation': CONSENT,
-                                      'transcript': 'The saved words.'}]
+    assert speech_server.uploads == [{'voice': wav, 'name': name_for(wav), 'consent_attestation': CONSENT}]
     assert speech_server.speeches == [asked(model='breeze', input=script, voice=name_for(wav), ref_text='The saved words.',
                                             instructions=instruction, cfg_scale=4.0, seed=9)]
     assert rate == 24000 and len(audio) == speech.SAMPLE_SECONDS * rate
@@ -706,7 +706,7 @@ def test_chatterbox_narrates_on_the_service_and_a_rambling_line_is_retaken_with_
     assert speech_server.speeches == [asked(model='chatterbox', input='Hello.', voice=name, language=language, seed=seed)
                                       for seed in (42, 43)]
     assert len(speech_server.uploads) == 1 and len(audio) == rate // 2
-    assert models.loads == [speech.TRANSCRIBER], 'Whisper only, for the upload transcript'
+    assert models.loads == [], 'no speech model on this Mac, not even Whisper'
 
 
 def test_a_line_that_keeps_rambling_is_kept_after_three_tries(tmp_path, models, speech_server):
@@ -736,7 +736,7 @@ def test_with_the_service_chatterbox_designs_directs_compares_and_narrates_witho
     sf.write(take, *engine.direct(second, 'happy', 3), format='WAV')
     engine.speak('Hello.', take, 4)
     assert [call['model'] for call in speech_server.speeches] == ['breeze', 'breeze', 'breeze', 'chatterbox']
-    assert models.loads == [speech.TRANSCRIBER, speech.TRANSCRIBER]
+    assert models.loads == [speech.TRANSCRIBER], 'Whisper once, for the take'
     assert {repo for repo, _ in models.snapshots} == {speech.TRANSCRIBER}
     assert engine.chatterbox is engine.multilingual is engine.designer is engine.breeze is engine.narrator is None
 
