@@ -10,6 +10,7 @@ const seg = (text: string, character_id: number | null = 1): Segment => ({
   text,
   kind: 'narration',
   character_id,
+  emotion: 'neutral',
   audio_state: 'ready',
   audio_rev: 0,
   duration: 1,

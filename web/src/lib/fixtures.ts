@@ -8,6 +8,7 @@ export function segment(id: number, patch: Partial<Segment> = {}): Segment {
     text: `Line ${id}. `,
     kind: 'narration',
     character_id: 1,
+    emotion: 'neutral',
     audio_state: 'ready',
     audio_rev: 1,
     duration: 1,
