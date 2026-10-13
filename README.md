@@ -16,30 +16,46 @@ Needs macOS on Apple Silicon, [uv](https://docs.astral.sh/uv/), pnpm, and a logg
 ./start
 ```
 
-That builds the web app and starts the server that serves it. Arguments go to the server, for example `./start --port 9000`.
+That builds the web app, starts the installed `me-read-speech` user service on `radeon`, opens its SSH tunnel, waits for it to be ready, and starts the reader. The first run asks for your own statement that you may use the reference voices; it remembers the statement in `launcher.json` inside your library folder, readable only by your user. To replace it, pass `--tts-consent "YOUR OWN STATEMENT"` again. It never supplies a statement for you.
 
-Open http://127.0.0.1:8765 and drop an EPUB on the library.
+Open http://127.0.0.1:8765 and drop an EPUB on the library. Press Ctrl-C to stop the reader and close its tunnel. The GPU user service stays running. If the tunnel disconnects, the reader stops too; run the command again to reconnect. An occupied reader or tunnel port is reported before any GPU service is switched.
+
+`radeon`'s speech and image services cannot share its 16 GB card. Choose what it does with the same command:
+
+```sh
+./start --gpu images
+```
+
+That starts `me-read-imager` instead, stops the GPU speech service, waits for the image model, and sets the library's image address to its tunnel at `http://127.0.0.1:8766`. Speech runs on the Mac. Use the reader's "Pictures on" switch to enable pictures if you had switched them off. Returning to `./start` starts GPU speech again, stops the image service, and clears the library's image address so it does not queue pictures against the stopped service.
+
+To run without managing either GPU service or opening a tunnel:
+
+```sh
+./start --gpu local
+```
+
+Other options still work, for example `./start --port 9000` or `./start --tts-provider breeze-gguf`. `--gpu-host HOST` uses a different SSH host with the same installed user services. SSH must already work without a password prompt. Run `./start --help` for all options; help does not build the web app, contact the GPU machine, or download models.
 
 Models download only when needed into `~/.local/share/me-read/models`. Help does not download models. Books, voices, and audio live in `~/.local/share/me-read`; set `ME_READ_HOME` or pass `--home` to move them.
 
 ### Choose a local narrator
 
-Run these commands from the repository root. `./start` forwards `--tts-provider` to the server. The default is `chatterbox`.
+Run these commands from the repository root. `--gpu local` keeps voice design and narration on the Mac. The default narrator is `chatterbox`.
 
 ```sh
-./start --tts-provider chatterbox
+./start --gpu local --tts-provider chatterbox
 ```
 
 Chatterbox and Fish narrate English and Spanish, and they also accept books in other languages. To use Fish, stop the current server and run:
 
 ```sh
-./start --tts-provider fish
+./start --gpu local --tts-provider fish
 ```
 
 Breeze supports English narration only. To try Breeze with an English book, stop the current server and run:
 
 ```sh
-./start --tts-provider breeze
+./start --gpu local --tts-provider breeze
 ```
 
 For a Spanish book, Breeze reports an error before automatically designing missing voices or loading narration models. Restart with Fish or Chatterbox to read it. There is no silent fallback to another narrator.
@@ -100,7 +116,7 @@ With `--tts-url`, the service does this work:
 - Chatterbox compares speakers, so a new voice does not sound like a voice the book already has.
 - It narrates when the narrator is `chatterbox` or `breeze-gguf`. With `fish` or `breeze`, narration stays on this Mac.
 
-The service listens on localhost only. Open a tunnel from the Mac and leave it running. Replace `HOST` with the GPU machine's SSH name:
+With the user services installed on `radeon`, `./start` manages the speech service and tunnel for you. For a manually managed service, open a tunnel from the Mac and leave it running. Replace `HOST` with the GPU machine's SSH name:
 
 ```sh
 ssh -N -L 8781:127.0.0.1:8781 HOST
@@ -120,6 +136,8 @@ To narrate with Breeze on the service instead of Chatterbox:
 
 Replace `YOUR OWN STATEMENT` with your own words. `--tts-consent` is your statement that you may use the reference voices. me-read has no default and refuses to start with `--tts-url` but without it. The text is sent with every request. `breeze-gguf` always needs the service.
 
+An explicit `--tts-url` selects a manually managed connection: the launcher skips SSH and leaves the image setting alone. It requires `--tts-consent` on that command. The remembered first-run statement is used only by the managed GPU speech mode.
+
 - Spanish books work. Qwen designs the voices and Chatterbox Multilingual narrates. `breeze-gguf` narrates English only, so it rejects a Spanish book before it sends anything. As on the Mac, only English books get emotion takes.
 - Transcripts stay on the Mac. Breeze needs the words spoken in the voice it clones, so before an emotion take, or a line read with `breeze-gguf`, Whisper transcribes that voice on this Mac once and me-read sends the words with the request. Chatterbox needs no transcript. With `chatterbox` and the service, Whisper is the only model that loads on the Mac, and only for takes.
 - Clips are not read again when you move. `chatterbox` on the Mac and `chatterbox` on the service count as the same narrator, so ready clips stay ready. The service runs the full Chatterbox model, not the Mac's 8-bit copy, so new clips may sound slightly different from old ones.
@@ -132,7 +150,7 @@ Replace `YOUR OWN STATEMENT` with your own words. `--tts-consent` is your statem
 
 ### Illustrations
 
-Illustrations are off until you give the library's settings the address of an image service, for example `http://192.168.1.20:8766`. The service lives in `imager/` and runs on another machine, a Linux box with a GPU; `imager/README.md` says how to start it. Once the address is set, the reader shows a "Pictures on" switch next to the tagger switch. While it is off nothing is looked for or drawn and the page looks as it does without the service.
+Use `./start --gpu images` to start the installed image service on `radeon` and configure its tunneled address automatically. For a manually managed image service, use `./start --gpu local` and give the library's settings its address, for example `http://192.168.1.20:8766`. The service lives in `imager/` and runs on another machine, a Linux box with a GPU; `imager/README.md` says how to start it. Once the address is set, the reader shows a "Pictures on" switch next to the tagger switch. While it is off nothing is looked for or drawn and the page looks as it does without the service.
 
 For frontend work, run `pnpm dev` in `web/` (port 5183) next to the server; it proxies `/api`.
 

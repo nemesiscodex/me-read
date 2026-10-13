@@ -142,3 +142,13 @@ def test_injected_engine_identity_is_used_instead_of_the_default_cli_choice(tmp_
     app = create_app(tmp_path, engine=engine, run_workers=False)
     identity = json.loads(app.state.store.one('SELECT identity FROM generation_identity')['identity'])
     assert identity == speech.PROVIDERS['breeze'].identity
+
+
+@pytest.mark.parametrize('url', ['', 'http://127.0.0.1:8766'])
+def test_image_service_setting_is_applied_before_server_starts(tmp_path, monkeypatch, url):
+    seen = []
+    monkeypatch.setattr(speech.Engine, '_snapshot', forbid_snapshot)
+    monkeypatch.setattr(uvicorn.Server, 'run', lambda self: seen.append(self.config.app.state.store.settings()))
+    monkeypatch.setattr(sys, 'argv', ['meread', '--home', str(tmp_path), '--image-url', url])
+    __main__.main()
+    assert seen[0]['image_url'] == url
