@@ -52,10 +52,11 @@ class FakeEngine:
 
     def __init__(self):
         self.designed, self.others, self.spoken, self.during_speak, self.languages = [], [], [], None, set()
-        self.directed, self.direct_error = [], None
+        self.directed, self.direct_error, self.ceilings = [], None, []
 
-    def design(self, instruction, seed, language='en', others=()):
+    def design(self, instruction, seed, language='en', others=(), ceiling=None):
         self.designed.append(instruction)
+        self.ceilings.append(ceiling)
         self.others.append(list(others))
         self.languages.add(language)
         return np.full(24000 * 7, 0.1, dtype='float32'), 24000
