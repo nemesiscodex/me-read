@@ -201,6 +201,9 @@ export const api = {
   regenerateSegment: (segmentId: number) => request<Segment>(`/api/segments/${segmentId}/regenerate`, json('POST')),
   /** Ask the tagger to label a paragraph's spoken lines again. */
   retagBlock: (blockId: number) => request<void>(`/api/blocks/${blockId}/retag`, json('POST')),
+  /** Ask the tagger to label the spoken lines of paragraphs `first` to `last` again. Returns how many paragraphs it will. */
+  retagBlocks: (bookId: number, range: { first: number; last: number }) =>
+    request<{ retagged: number }>(`/api/books/${bookId}/retag`, json('POST', range)),
 
   createCharacter: (bookId: number, input: CharacterInput) =>
     request<Character>(`/api/books/${bookId}/characters`, json('POST', input)),

@@ -63,8 +63,14 @@ export function pageCountOf(spans: BlockSpan[]): number {
   return spans.reduce((count, span) => Math.max(count, span.lastPage + 1), 1)
 }
 
-function blocksOn(spans: BlockSpan[], page: number): { first: number; last: number } | null {
-  let range: { first: number; last: number } | null = null
+export interface BlockRange {
+  first: number
+  last: number
+}
+
+/** First and last block index shown on a page, or null when the page has none. */
+export function blocksOn(spans: BlockSpan[], page: number): BlockRange | null {
+  let range: BlockRange | null = null
   for (const span of spans) {
     if (span.firstPage > page || span.lastPage < page) continue
     range = range

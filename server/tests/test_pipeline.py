@@ -261,6 +261,25 @@ def test_retagging_a_paragraph_asks_again(world):
     assert world.ask.prompts[-1].count('[[q') == 1
 
 
+def test_retagging_a_page_asks_again_about_its_spoken_paragraphs(world):
+    world.ask.answer = answer
+    focus(world)
+    world.drain()
+    before = speakers(world)
+    world.ask.answer = lambda prompt: {
+        'new_characters': [], 'lines': [{'q': q + 1, 'speaker': 'narrator'} for q in range(prompt.count('[[q'))]}
+    retag = world.client.post(f"/api/books/{world.book['id']}/retag", json={'first': 2, 'last': 4})
+    assert retag.status_code == 200 and retag.json() == {'retagged': 2}
+    assert [b['tag_state'] for b in world.chapter()][2:] == ['pending', 'pending', 'tagged', 'tagged']
+    assert all(s['audio_state'] == 'none' for b in world.chapter()[2:4] for s in b['segments'] if s['kind'] == 'speech')
+    world.drain()
+    after = speakers(world)
+    assert {name for _, name in after[:-1]} == {'Narrator'}
+    assert after[-1] == before[-1] and after[-1][1] != 'Narrator'
+    assert world.client.post(f"/api/books/{world.book['id']}/retag", json={'first': 0, 'last': 1}).json() == {'retagged': 0}
+    assert world.client.post(f"/api/books/{world.book['id']}/retag", json={'first': 4, 'last': 2}).status_code == 422
+
+
 def test_bad_uploads_are_refused(world):
     assert world.client.post('/api/books', files={'file': ('x.epub', b'not a zip', 'application/epub+zip')}).status_code == 400
     narrator = world.store.narrator(world.book['id'])

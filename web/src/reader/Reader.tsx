@@ -4,7 +4,7 @@ import { IllustrationSwitch } from './IllustrationSwitch'
 import { TaggerSwitch } from './TaggerSwitch'
 import { Icon } from '../Icon'
 import { characterHue, narratorOf } from '../lib/cast'
-import { anchorAt, chapterContaining, focusFor, layoutFor, placeOf, type Anchor, type Place } from '../lib/pages'
+import { anchorAt, blocksOn, chapterContaining, focusFor, layoutFor, placeOf, type Anchor, type Place } from '../lib/pages'
 import { countedMoments, illustrating, momentReached, momentToShow, readingPosition } from '../lib/moments'
 import { activeSegmentId } from '../lib/player'
 import { FONT_SIZE, SPEED, useNumberPref } from '../lib/prefs'
@@ -498,6 +498,10 @@ export function Reader({ bookId, place }: { bookId: number; place: Place | null 
           block={correctingTarget.block}
           characters={data.book.characters}
           at={correcting}
+          pages={{
+            current: blocksOn(pagination.spans, pagination.page),
+            next: blocksOn(pagination.spans, pagination.page + 1),
+          }}
           canStar={illustrated && !pictures.get(correctingTarget.block.id)?.starred}
           onClose={closeCorrection}
           onSegment={(segment) => dispatch({ type: 'segmentSaved', segment })}

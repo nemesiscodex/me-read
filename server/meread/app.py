@@ -72,6 +72,11 @@ class Focus(BaseModel):
     position: Place | None = None
 
 
+class Span(BaseModel):
+    first: int
+    last: int
+
+
 class Speaker(BaseModel):
     character_id: int
 
@@ -159,6 +164,11 @@ def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers
 
     def segment_book(segment_id):
         return found(store.one('SELECT book_id FROM segment WHERE id = ?', (segment_id,)), 'segment')['book_id']
+
+    def retag(book_id, block_ids):
+        hub.publish(book_id, {'type': 'blocks', 'blocks': [{'id': i, 'tag_state': 'pending'} for i in block_ids]})
+        marks = ','.join('?' * len(block_ids))
+        announce(book_id, f'block_id IN ({marks})', block_ids)
 
     def announce(book_id, where, args=()):
         hub.publish(book_id, {'type': 'characters', 'characters': store.characters(book_id)})
@@ -275,9 +285,19 @@ def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers
     @app.post('/api/blocks/{block_id}/retag', status_code=204)
     def retag_block(block_id: int):
         block = found(store.one('SELECT book_id FROM block WHERE id = ?', (block_id,)), 'paragraph')
-        store.retag_block(block_id)
-        hub.publish(block['book_id'], {'type': 'blocks', 'blocks': [{'id': block_id, 'tag_state': 'pending'}]})
-        announce(block['book_id'], 'block_id = ?', (block_id,))
+        retag(block['book_id'], store.retag_blocks('id = ?', (block_id,)))
+
+    @app.post('/api/books/{book_id}/retag')
+    def retag_range(book_id: int, span: Span):
+        """Send the paragraphs from `first` to `last` that have spoken lines back to the tagger."""
+        found(store.book(book_id), 'book')
+        if span.last < span.first:
+            raise HTTPException(422, 'last is before first')
+        ids = store.retag_blocks(
+            "book_id = ? AND idx BETWEEN ? AND ? AND EXISTS (SELECT 1 FROM segment WHERE block_id = block.id AND kind = 'speech')",
+            (book_id, span.first, span.last))
+        retag(book_id, ids)
+        return {'retagged': len(ids)}
 
     @app.post('/api/blocks/{block_id}/star')
     def star_block(block_id: int):
