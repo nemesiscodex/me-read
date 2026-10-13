@@ -88,20 +88,62 @@ AGE_GENDER = {('child', 'male'): 'A little boy', ('child', 'female'): 'A little 
               ('teen', 'male'): 'A teenage boy', ('teen', 'female'): 'A teenage girl',
               ('adult', 'male'): 'An adult man', ('adult', 'female'): 'An adult woman',
               ('elderly', 'male'): 'An elderly man', ('elderly', 'female'): 'An elderly woman'}
+# The voice designers give "a teenage boy" a woman's pitch more often than not; a young man of eighteen stays a man.
+# Portraits still show a teenage boy.
+VOICE_AGE_GENDER = {**AGE_GENDER, ('teen', 'male'): 'A young man of about eighteen'}
 PITCH = {'low': 'a low, deep voice', 'medium': 'a medium-pitched voice', 'high': 'a high, bright voice'}
 # Semitones a new sample is moved by when it sounds like a voice the book already has, mildest first.
 SHIFTS = 0, -2, 2, -3, 3
 # How alike two samples are to the cloning model, from 0 to 1, above which they pass for one person. Two samples
 # designed from the same description score about 0.9, two different men about 0.7.
 SAME_VOICE = 0.85
+# The highest median pitch, in Hz, a man's or older boy's voice may have at each pitch. The designers sometimes give
+# them a woman's voice, which sits above 220 Hz.
+MALE_CEILING = {'low': 160, 'medium': 210, 'high': 250}
+DESIGN_TRIES = 4
 
 
 def voice_instruction(character):
     """The plain-language voice description the designer model works from."""
-    who = AGE_GENDER.get((character['age'], character['gender']), AGE[character['age']])
+    who = VOICE_AGE_GENDER.get((character['age'], character['gender']), AGE[character['age']])
     detail = character['description'].strip().rstrip('.')
     # Short and about the sound only: with a sentence every voice shares, the designer returns much the same voice.
     return f"{who} with {PITCH[character['pitch']]}." + (f' {detail[0].upper()}{detail[1:]}.' if detail else '')
+
+
+def pitch_ceiling(character):
+    """The highest median pitch the character's designed voice may have, or None when any pitch will do."""
+    if character['gender'] != 'male' or character['age'] == 'child':
+        return None
+    return MALE_CEILING[character['pitch']]
+
+
+def median_pitch(audio, rate):
+    """The median pitch of the voiced parts of `audio` in Hz, or None when nothing in it is voiced."""
+    hop, window, found = rate // 100, rate // 25, []
+    for start in range(0, len(audio) - window, hop):
+        frame = audio[start:start + window] - audio[start:start + window].mean()
+        if np.sqrt((frame ** 2).mean()) < 0.02:
+            continue
+        correlation = np.correlate(frame, frame, 'full')[window - 1:]
+        lag = rate // 500 + int(np.argmax(correlation[rate // 500:rate // 60]))
+        if correlation[lag] > 0.5 * correlation[0]:
+            found.append(rate / lag)
+    return float(np.median(found)) if found else None
+
+
+def within_ceiling(tries, make, ceiling):
+    """The first sample whose median pitch is at or below `ceiling`, or the lowest of them all. One try without one.
+
+    `make(i)` designs try i and returns (sample, median pitch or None).
+    """
+    made = []
+    for i in range(1 if ceiling is None else tries):
+        sample, pitch = make(i)
+        if ceiling is None or (pitch is not None and pitch <= ceiling):
+            return sample
+        made.append((math.inf if pitch is None else pitch, sample))
+    return min(made, key=lambda attempt: attempt[0])[1]
 
 
 def shifted(audio, semitones):
@@ -299,8 +341,8 @@ def decode_wav(data):
 
 
 class Engine:
-    """A selected local narrator, the shared Qwen3 voice designer and the Breeze voice director. One worker owns all
-    model calls."""
+    """A selected local narrator, Breeze to design English voices and direct takes, and the Qwen3 voice designer for
+    other languages. One worker owns all model calls."""
 
     def __init__(self, models_dir, tts_provider='chatterbox', tts_url=None, tts_consent=None):
         self.provider = PROVIDERS[tts_provider]
@@ -310,7 +352,7 @@ class Engine:
         os.environ['HF_HUB_CACHE'] = str(self.hub)
         os.environ.setdefault('TQDM_DISABLE', '1')
         os.environ.setdefault('TRANSFORMERS_VERBOSITY', 'error')
-        self.chatterbox = self.multilingual = self.designer = self.narrator = self.director = None
+        self.chatterbox = self.multilingual = self.designer = self.narrator = self.breeze = None
         self.voices, self.speakers, self.transcripts, self.uploads = {}, {}, {}, {}
 
     @property
@@ -342,41 +384,55 @@ class Engine:
         finally:
             mx.clear_cache()
 
-    def design(self, instruction, seed, language='en', others=()):
-        """A voice sample of about 15 seconds matching `instruction`, spoken in `language`, as (audio, rate).
+    def _breeze(self):
+        from mlx_audio.tts.utils import load_model
+        # The Breeze narrator designs and directs too; a second copy would only take memory.
+        if self.provider.models[0] == BREEZE:
+            if self.narrator is None:
+                self.narrator = load_model(self._snapshot(BREEZE))
+            return self.narrator
+        if self.breeze is None:
+            self.breeze = load_model(self._snapshot(BREEZE))
+        return self.breeze
+
+    def design(self, instruction, seed, language='en', others=(), ceiling=None):
+        """A voice sample of about 15 seconds matching `instruction`, spoken in `language`, as (audio, rate). Breeze
+        designs English voices and Qwen3 the others.
 
         `others` are the samples of the voices already in use. The designer tends to return the same few voices, so a
-        sample the cloning model would take for one of them is shifted until it is not.
+        sample the cloning model would take for one of them is shifted until it is not. A sample whose median pitch is
+        above `ceiling` is designed again with the next seed, up to four tries, keeping the lowest.
         """
+        def attempt(i):
+            audio, rate = self._designed(instruction, seed + i, language)
+            audio = trim(audio, rate)[:SAMPLE_SECONDS * rate]
+            if len(audio) < MIN_SAMPLE_SECONDS * rate:
+                raise RuntimeError('the designed voice sample came out too short')
+            audio = self._apart(audio, rate, [path for path in others if os.path.exists(path)], language)
+            return (audio, rate), (None if ceiling is None else median_pitch(audio, rate))
+        return within_ceiling(DESIGN_TRIES, attempt, ceiling)
+
+    def _designed(self, instruction, seed, language):
         import mlx.core as mx
+        mx.random.seed(seed)
+        spoken, text = SAMPLE_TEXT.get(language, SAMPLE_TEXT['en'])
+        if language == 'en':
+            designer = self._breeze()
+            return self._generate(designer.generate(text=text, instruct=instruction, cfg_scale=4.0, seed=seed, stream=False),
+                                  designer.sample_rate)
         from mlx_audio.tts.utils import load_model
         if self.designer is None:
             self.designer = load_model(self._snapshot(DESIGNER))
-        mx.random.seed(seed)
-        spoken, text = SAMPLE_TEXT.get(language, SAMPLE_TEXT['en'])
-        audio, rate = self._generate(self.designer.generate_voice_design(text=text, instruct=instruction, language=spoken),
-                                     self.designer.sample_rate)
-        audio = trim(audio, rate)[:SAMPLE_SECONDS * rate]
-        if len(audio) < MIN_SAMPLE_SECONDS * rate:
-            raise RuntimeError('the designed voice sample came out too short')
-        return self._apart(audio, rate, [path for path in others if os.path.exists(path)], language), rate
+        return self._generate(self.designer.generate_voice_design(text=text, instruct=instruction, language=spoken),
+                              self.designer.sample_rate)
 
     def direct(self, voice_path, emotion, seed):
         """A take of about 15 seconds of the saved voice saying the emotion's script the way the emotion asks, as
         (audio, rate). Breeze directs it on this Mac whichever narrator reads the book."""
         import mlx.core as mx
-        from mlx_audio.tts.utils import load_model
         instruction, script = DIRECTIONS[emotion]
         wav = Path(voice_path).read_bytes()
-        # The Breeze narrator is the director already; a second copy would only take memory.
-        if self.provider.models[0] == BREEZE:
-            if self.narrator is None:
-                self.narrator = load_model(self._snapshot(BREEZE))
-            director = self.narrator
-        else:
-            if self.director is None:
-                self.director = load_model(self._snapshot(BREEZE))
-            director = self.director
+        director = self._breeze()
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'reference.wav'
             path.write_bytes(wav)

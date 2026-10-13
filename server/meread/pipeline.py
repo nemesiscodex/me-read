@@ -314,7 +314,8 @@ class Pipeline:
         self._say('speech', f"Designing a voice for {character['name']}")
         try:
             audio, rate = self.engine.design(speech.voice_instruction(character), seed=character['id'] * 1000 + rev,
-                                             language=self._language(book_id), others=self._other_voices(character))
+                                             language=self._language(book_id), others=self._other_voices(character),
+                                             ceiling=speech.pitch_ceiling(character))
             self._land(lambda tmp: sf.write(tmp, audio, rate, format='WAV'), self.store.voice_path(character),
                        lambda: self.store.run("UPDATE character SET voice_state = 'ready' WHERE id = ? AND voice_rev = ? "
                                               "AND voice_state = 'designing'", (character['id'], rev)).rowcount)
@@ -334,7 +335,8 @@ class Pipeline:
         self._say('speech', f"Designing a candidate voice for {character['name']}")
         try:
             audio, rate = self.engine.design(speech.voice_instruction(character), seed=character['id'] * 1000 + 500 + rev,
-                                             language=self._language(book_id), others=self._other_voices(character))
+                                             language=self._language(book_id), others=self._other_voices(character),
+                                             ceiling=speech.pitch_ceiling(character))
             self._land(lambda tmp: sf.write(tmp, audio, rate, format='WAV'), self.store.draft_path(character),
                        lambda: self.store.run("UPDATE character SET draft_state = 'ready' WHERE id = ? AND draft_rev = ? "
                                               "AND draft_state = 'designing'", (character['id'], rev)).rowcount)

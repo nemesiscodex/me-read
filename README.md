@@ -44,11 +44,12 @@ Breeze supports English narration only. To try Breeze with an English book, stop
 
 For a Spanish book, Breeze reports an error before automatically designing missing voices or loading narration models. Restart with Fish or Chatterbox to read it. There is no silent fallback to another narrator.
 
-Qwen remains the shared English and Spanish voice designer for every choice. You can explicitly request, audition, and approve a Spanish candidate while Breeze is selected. That candidate can narrate after you switch to Fish or Chatterbox. Existing Chatterbox speaker comparisons keep newly designed voices distinct from the rest of the cast.
+Whichever narrator is selected, local Breeze designs English voice samples and Qwen designs Spanish ones. You can explicitly request, audition, and approve a Spanish candidate while Breeze is selected. That candidate can narrate after you switch to Fish or Chatterbox. Existing Chatterbox speaker comparisons keep newly designed voices distinct from the rest of the cast.
 
 ```text
 Engine.design
-  Qwen voice design in English or Spanish
+  Breeze voice design in English, Qwen in Spanish
+  designed again, up to four tries, while a male voice is above its pitch range
   Chatterbox speaker comparison when other voices exist
   saved candidate or approved WAV
 Engine.speak
@@ -72,9 +73,9 @@ Speech runs locally through `mlx-audio==0.5.7` on Apple Silicon using MLX. No ho
 - English Chatterbox uses `mlx-community/chatterbox-turbo-8bit`.
 - Spanish Chatterbox uses `mlx-community/chatterbox-8bit`.
 - Chatterbox's tokenizer is `mlx-community/S3TokenizerV2`.
-- The shared designer is `mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit`.
+- Spanish voices are designed by `mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit`.
 - Fish uses `mlx-community/fish-audio-s2-pro-8bit`.
-- Breeze uses `mlx-community/Breeze-TTS-2-mlx-4bit`. It also directs emotion takes of English books, whichever narrator is selected.
+- Breeze uses `mlx-community/Breeze-TTS-2-mlx-4bit`. It also designs English voices and directs emotion takes of English books, whichever narrator is selected.
 - Local transcription uses `mlx-community/whisper-large-v3-turbo-asr-fp16` at revision `624c19c9af5603fa73b83bce14d4aeea96156d18`.
 
 Fish adds about 6.72 GB of weights. Breeze adds about 3.01 GB. Whisper adds about 1.61 GB and is shared by Fish and Breeze. Using both alternatives adds about 11.34 GB, plus the existing Qwen and Chatterbox assets. These download estimates are not peak memory requirements.
@@ -100,7 +101,7 @@ Replace `HOST` with the server's address and `YOUR OWN STATEMENT` with your own 
 The server is a patched CrispASR build that runs Breeze TTS 2 in the GGUF q4_k format, as `cstr/breeze-tts-2-GGUF@q4_k`. Its patch, build steps and launcher are in `speech-service/README.md`. Whisper still runs locally to transcribe each saved reference WAV, as it does for Breeze.
 
 - Narration is English only. A Spanish book is rejected before any reference file is read or any request is sent.
-- Qwen still designs new English and Spanish voice samples on this machine. The server clones the English samples. Breeze's own voice design from a description is not available in that runtime.
+- Local Breeze still designs new English voice samples on this machine, and the server clones them. Voice design from a description is not available in the server's runtime.
 - On a 16 GB card, an image request at 896 by 608 ran out of memory while the speech server was loaded. Run one of the two services at a time. Turn pictures off, or stop the speech server while pictures are drawn.
 - The spoken AI disclaimer is turned off on every request. You are then responsible for disclosing that the audio is AI-generated. The watermark and provenance record stay on. me-read checks the server's answer and refuses clips that still carry the spoken disclaimer.
 - Speed: in the four requests of the end-to-end run, once a voice was uploaded, the server took about 9 to 10 seconds for 5 to 6 seconds of speech. That is a real-time factor of about 1.6 to 1.7 with the q4_k build on one machine, so it is slower than real time. The first request for a new voice also waits for the local Whisper transcript and the upload.
@@ -119,7 +120,7 @@ For frontend work, run `pnpm dev` in `web/` (port 5183) next to the server; it p
 1. **Import.** `server/meread/epub.py` reads the EPUB into paragraphs. `segment.py` splits each paragraph into *segments*: narration, or one quotation, cut to about 40 words. Segments always concatenate back to the exact paragraph text.
 2. **Focus.** The reader reports which paragraphs are on the previous, current and next page. Only those are processed, starting from the current page.
 3. **Tagging.** `tagger.py` sends the focused paragraphs, the cast so far and some earlier text to `claude -p` (Haiku 5.5) or `codex exec` (`gpt-6-luna`). The model answers who says each quotation and how it is said (neutral, happy, sad, angry, scared or whisper), and describes new characters: name, gender, age, pitch and how they sound. Unnamed speakers become extras such as "Guard 1". If tagging fails, the narrator reads the line and the paragraph is flagged.
-4. **Voices.** For a new character, Qwen3-TTS VoiceDesign turns the description into a 15 second sample, saved as `books/<book>/voices/<character>.wav`. The designer tends to return much the same voice for similar characters, so a sample that the speech model would take for a voice the book already has is played slightly slower or faster, by up to three semitones, until it is not. In the Cast panel you can try a new voice, listen to the candidate, and only then use it; the character's lines are read again in it. You can also upload your own recording.
+4. **Voices.** For a new character, Breeze turns the description into a 15 second sample, saved as `books/<book>/voices/<character>.wav`. Qwen3-TTS VoiceDesign does this for books in other languages. The designers sometimes give a man or a teenage boy a woman's voice, so a male voice whose median pitch is above the range for its pitch (160 Hz for low, 210 Hz for medium, 250 Hz for high) is designed again with the next seed, up to four tries, keeping the lowest. Teenage boys are described to the designer as young men of about eighteen for the same reason. The designer tends to return much the same voice for similar characters, so a sample that the speech model would take for a voice the book already has is played slightly slower or faster, by up to three semitones, until it is not. In the Cast panel you can try a new voice, listen to the candidate, and only then use it; the character's lines are read again in it. You can also upload your own recording.
 5. **Emotions.** In an English book, the first line a character says in an emotion other than neutral has Breeze direct their voice into a 15 second *take* of that emotion, `books/<book>/voices/<character>.<emotion>.wav`. A take belongs to the voice it was made from: once the voice is replaced, each take is made again when a line needs it. When a take cannot be made, the line is read in the character's own voice. Books in other languages read every line in the character's own voice. Right-click a line to change how it is said. Under each voice in the Cast panel you can hear each take, or make it again; its lines are then read again in the new take.
 6. **Speech.** The selected narrator clones the saved sample, or the take for the line's emotion, to read each segment into `books/<book>/audio/<segment>.flac`.
 

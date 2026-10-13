@@ -65,7 +65,10 @@ def test_tagging_attributes_lines_and_builds_the_cast(world):
         'female', 'elderly', 'high', 'named')
     assert cast['Guard 1']['role'] == 'extra' and cast['Tom']['line_count'] == 2
     assert all(c['voice_state'] == 'ready' for c in cast.values())
-    assert 'An elderly woman with a high, bright voice. Thin, high voice.' in world.engine.designed
+    ceilings = dict(zip(world.engine.designed, world.engine.ceilings))
+    assert ceilings['An elderly woman with a high, bright voice. Thin, high voice.'] is None
+    assert ceilings['An adult man with a low, deep voice. Bored sentry.'] == 160
+    assert ceilings['A young man of about eighteen with a medium-pitched voice.'] == 210
 
 
 def test_later_pages_reuse_the_cast_by_ref_and_by_name(world):
@@ -169,6 +172,7 @@ def test_a_new_voice_is_auditioned_before_it_replaces_the_old_one(world):
     assert world.client.post(f'{url}/voice/draft').json()['draft_state'] == 'queued'
     world.drain()
     assert world.engine.designed[-1].startswith('An adult man with a low, deep voice.')
+    assert world.engine.ceilings[-1] == 160, 'a candidate male voice is held to the male range too'
     voices = {c['name']: world.store.voice_path(c) for c in world.store.characters(world.book['id'])}
     assert sorted(world.engine.others[-1]) == sorted(path for name, path in voices.items() if name != 'Tom'), \
         'a new voice is kept apart from every other voice of the book, not from the one it replaces'

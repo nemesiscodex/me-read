@@ -60,10 +60,10 @@ def models(monkeypatch):
     class Breeze:
         sample_rate = 24000
 
-        def generate(self, *, text, ref_audio, ref_text, seed, stream, **direction):
-            assert isinstance(ref_audio, str)
-            state.spoken.append({'text': text, 'wav': Path(ref_audio).read_bytes(), 'ref_text': ref_text,
-                                 'seed': seed, 'stream': stream, **direction})
+        def generate(self, *, text, seed, stream, ref_audio=None, ref_text=None, **direction):
+            assert ref_audio is None or isinstance(ref_audio, str)
+            reference = {'wav': Path(ref_audio).read_bytes(), 'ref_text': ref_text} if ref_audio else {}
+            state.spoken.append({'text': text, **reference, 'seed': seed, 'stream': stream, **direction})
             mx.random.seed(seed)
             yield result(self.sample_rate, seconds=20 if direction else 0.5)
 
@@ -326,16 +326,96 @@ def test_reference_caches_are_bounded_and_evicted_references_are_transcribed_aga
 
 @pytest.mark.parametrize('provider', ['chatterbox', 'fish', 'breeze'])
 @pytest.mark.parametrize('language', ['en', 'es'])
-def test_all_providers_keep_qwen_design_and_chatterbox_voice_distinction(tmp_path, models, provider, language):
+def test_breeze_designs_english_voices_qwen_spanish_and_chatterbox_keeps_them_distinct(tmp_path, models, provider, language):
     other = recording(tmp_path / 'other.wav')
     engine = speech.Engine(tmp_path / 'hub', provider)
     audio, rate = engine.design('A low voice.', 42, language=language, others=[other])
-    assert models.loads == [speech.DESIGNER, speech.CHATTERBOX if language == 'en' else speech.MULTILINGUAL]
-    assert models.spoken[0] == {'instruction': 'A low voice.', 'design_text': speech.SAMPLE_TEXT[language][1],
-                               'language': speech.SAMPLE_TEXT[language][0]}
+    if language == 'en':
+        assert models.loads == [speech.BREEZE, speech.CHATTERBOX]
+        assert models.spoken[0] == {'text': speech.SAMPLE_TEXT['en'][1], 'instruct': 'A low voice.', 'cfg_scale': 4.0,
+                                    'seed': 42, 'stream': False}
+    else:
+        assert models.loads == [speech.DESIGNER, speech.MULTILINGUAL]
+        assert models.spoken[0] == {'instruction': 'A low voice.', 'design_text': speech.SAMPLE_TEXT['es'][1],
+                                    'language': 'Spanish'}
     assert rate == 24000 and len(audio) == 15 * rate
     assert models.transcribed == []
-    assert engine.narrator is None
+
+
+@pytest.mark.parametrize('provider', ['chatterbox', 'breeze'])
+def test_one_breeze_model_designs_directs_and_narrates(tmp_path, models, provider):
+    engine = speech.Engine(tmp_path / 'hub', provider)
+    voice = tmp_path / 'voice.wav'
+    sf.write(voice, *engine.design('A low voice.', 42), format='WAV')
+    engine.direct(voice, 'angry', 9)
+    engine.speak('Hello.', voice, 77)
+    assert models.loads.count(speech.BREEZE) == 1
+
+
+def test_a_male_voice_above_its_ceiling_is_designed_again_with_the_next_seed(tmp_path, models, monkeypatch):
+    pitches = iter([300., 240., 190., 100.])
+    monkeypatch.setattr(speech, 'median_pitch', lambda audio, rate: next(pitches))
+    engine = speech.Engine(tmp_path / 'hub', 'fish')
+    audio, rate = engine.design('A young man.', 42, ceiling=210)
+    assert [call['seed'] for call in models.spoken] == [42, 43, 44]
+    third, _ = engine.design('A young man.', 44)
+    np.testing.assert_array_equal(audio, third)
+
+
+@pytest.mark.parametrize('hz', [120, 300])
+def test_median_pitch_finds_the_fundamental_of_a_voiced_tone(hz):
+    rate = 24000
+    t = np.arange(2 * rate) / rate
+    tone = sum(0.3 / k * np.sin(2 * np.pi * hz * k * t) for k in (1, 2, 3)).astype('float32')
+    assert speech.median_pitch(tone, rate) == pytest.approx(hz, rel=0.05)
+    assert speech.median_pitch(np.zeros(2 * rate, dtype='float32'), rate) is None
+
+
+def test_the_first_sample_within_the_ceiling_is_kept_and_no_more_are_made():
+    made = []
+
+    def make(i):
+        made.append(i)
+        return f'sample {i}', [300., 205., 100., 90.][i]
+    assert speech.within_ceiling(4, make, 210) == 'sample 1'
+    assert made == [0, 1]
+
+
+def test_the_lowest_sample_is_kept_when_none_is_within_the_ceiling():
+    made = []
+
+    def make(i):
+        made.append(i)
+        return f'sample {i}', [300., 260., None, 280.][i]
+    assert speech.within_ceiling(4, make, 210) == 'sample 1'
+    assert made == [0, 1, 2, 3]
+
+
+def test_without_a_ceiling_one_sample_is_made():
+    made = []
+
+    def make(i):
+        made.append(i)
+        return f'sample {i}', None
+    assert speech.within_ceiling(4, make, None) == 'sample 0'
+    assert made == [0]
+
+
+@pytest.mark.parametrize('age', ['teen', 'adult', 'elderly'])
+@pytest.mark.parametrize('pitch, hz', [('low', 160), ('medium', 210), ('high', 250)])
+def test_men_and_older_boys_get_a_pitch_ceiling(age, pitch, hz):
+    assert speech.pitch_ceiling({'gender': 'male', 'age': age, 'pitch': pitch}) == hz
+
+
+@pytest.mark.parametrize('gender, age', [('male', 'child'), ('female', 'adult'), ('female', 'teen'),
+                                         ('unknown', 'adult'), ('unknown', 'teen')])
+def test_children_women_and_unknown_speakers_get_no_ceiling(gender, age):
+    assert speech.pitch_ceiling({'gender': gender, 'age': age, 'pitch': 'medium'}) is None
+
+
+def test_a_teenage_boy_is_voiced_as_a_young_man_of_eighteen():
+    teen = {'gender': 'male', 'age': 'teen', 'pitch': 'medium', 'description': 'quick and animated'}
+    assert speech.voice_instruction(teen) == 'A young man of about eighteen with a medium-pitched voice. Quick and animated.'
 
 
 def test_whisper_is_released_after_transcription_and_cached_calls_do_not_reload_it(tmp_path, models, monkeypatch):
