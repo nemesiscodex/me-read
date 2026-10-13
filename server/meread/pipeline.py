@@ -22,9 +22,10 @@ from .store import illustrating
 log = logging.getLogger('meread')
 TAG_BATCH = 20
 SCENE_BATCH = 30
-# Seconds before asking again after the scene call failed, and after the image service did not answer.
+# Seconds before asking again after the scene call failed, and after the image or speech service did not answer.
 SCENE_RETRY = 60
 IMAGE_RETRY = 15
+SPEECH_RETRY = 15
 CONTEXT_BLOCKS = 8
 MAX_FOCUS = 400
 SILENCE = 0.6, 24000
@@ -226,7 +227,23 @@ class Pipeline:
         focus = self.focus
         if not focus:
             return False
+        if time.monotonic() < self.retry_at.get('speech', 0):
+            return False
         book_id = focus['book_id']
+        provider = getattr(self.engine, 'provider', None)
+        try:
+            if provider is not None:
+                provider.validate_language(self._language(book_id))
+        except ValueError as e:
+            changed = self.store.run("UPDATE segment SET audio_state = 'failed', error = ? WHERE book_id = ? "
+                                     "AND block_idx BETWEEN ? AND ? AND audio_state = 'none'",
+                                     (str(e), book_id, focus['first'], focus['last'])).rowcount
+            if changed:
+                self._publish_segments(book_id, 'book_id = ? AND block_idx BETWEEN ? AND ?',
+                                       (book_id, focus['first'], focus['last']))
+            self.idle['speech'] = str(e)
+            return bool(changed)
+        self.idle['speech'] = None
         # While tagging is paused the narrator reads lines that have no speaker yet.
         paused = self.store.settings()['tagging_paused']
         seg = self.store.one(
@@ -333,6 +350,12 @@ class Pipeline:
                        self.store.audio_path(book_id, seg['id']),
                        lambda: self.store.run("UPDATE segment SET audio_state = 'ready', duration = ? WHERE id = ? "
                                               "AND audio_rev = ? AND audio_state = 'generating'", (duration, *claim)).rowcount)
+        except speech.Unavailable as e:
+            log.warning('the speech server is unavailable for segment %s: %s', seg['id'], e)
+            self.store.run("UPDATE segment SET audio_state = 'none' WHERE id = ? AND audio_rev = ? "
+                           "AND audio_state = 'generating'", claim)
+            self.idle['speech'] = 'The speech server is unavailable; trying again shortly'
+            self.retry_at['speech'] = time.monotonic() + SPEECH_RETRY
         except Exception as e:
             log.exception('speech failed for segment %s', seg['id'])
             self.store.run("UPDATE segment SET audio_state = 'failed', error = ? WHERE id = ? AND audio_rev = ? "
