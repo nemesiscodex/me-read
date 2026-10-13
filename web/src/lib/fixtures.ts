@@ -49,6 +49,7 @@ export function character(id: number, patch: Partial<Character> = {}): Character
     portrait_error: null,
     error: null,
     line_count: 0,
+    takes: [],
     ...patch,
   }
 }

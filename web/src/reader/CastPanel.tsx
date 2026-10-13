@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { api, type Character, type CharacterInput, type Settings, type VoiceState } from '../api'
+import { api, type Character, type CharacterInput, type Settings, type Take, type TakeState, type VoiceState } from '../api'
 import { Icon } from '../Icon'
 import { changedFields, inputOf, sortCast } from '../lib/cast'
 import { illustrating } from '../lib/moments'
@@ -10,6 +10,8 @@ interface Props {
   characters: Character[]
   /** Portraits and looks are shown once there is an image service, also while pictures are switched off. */
   settings: Settings | null
+  /** The book's lines are read in their emotions, which only English books are. */
+  emotions: boolean
   onClose: () => void
   onCharacter: (character: Character) => void
   onMerged: (id: number, into: number) => void
@@ -22,6 +24,14 @@ const VOICE_NOTE: Record<VoiceState, string> = {
   designing: 'designing a voice…',
   ready: 'voice ready',
   failed: 'voice failed',
+}
+
+const TAKE_NOTE: Record<TakeState, string> = {
+  none: 'not made yet',
+  queued: 'making…',
+  making: 'making…',
+  ready: 'ready',
+  failed: 'could not be made',
 }
 
 function portraitNote(character: Character, drawing: boolean): string {
@@ -38,10 +48,11 @@ function portraitNote(character: Character, drawing: boolean): string {
   }
 }
 
-export function CastPanel({ characters, settings, onClose, onCharacter, onMerged, onSample }: Props) {
+export function CastPanel({ characters, settings, emotions, onClose, onCharacter, onMerged, onSample }: Props) {
   const portraits = settings !== null && settings.image_url !== ''
   const [openId, setOpenId] = useState<number | null>(null)
   const [sampleOf, setSampleOf] = useState<string | null>(null)
+  const [takeProblem, setTakeProblem] = useState<{ id: number; text: string } | null>(null)
   const sample = useRef<HTMLAudioElement | null>(null)
 
   const stopSample = () => {
@@ -71,6 +82,16 @@ export function CastPanel({ characters, settings, onClose, onCharacter, onMerged
     sample.current = el
     setSampleOf(key)
     el.play().catch(stopSample)
+  }
+
+  const makeTake = async (character: Character, take: Take) => {
+    setTakeProblem(null)
+    try {
+      // A take can be made before this answer arrives, so the cast is left to the event stream.
+      await api.makeTake(character.id, take.emotion)
+    } catch (error) {
+      setTakeProblem({ id: character.id, text: error instanceof Error ? error.message : String(error) })
+    }
   }
 
   return (
@@ -125,6 +146,38 @@ export function CastPanel({ characters, settings, onClose, onCharacter, onMerged
             {character.voice_state === 'failed' && character.error && (
               <p className="cast-error">{character.error}</p>
             )}
+            {emotions && character.voice_state === 'ready' && (
+              <ul className="take-list" aria-label={`${character.name} in each emotion`}>
+                {character.takes.map((take) => {
+                  const key = `take-${character.id}-${take.emotion}`
+                  const making = take.state === 'queued' || take.state === 'making'
+                  return (
+                    <li key={take.emotion} className="take" data-take={take.state} title={`${take.emotion}: ${TAKE_NOTE[take.state]}`}>
+                      <button
+                        className="take-play"
+                        disabled={take.state !== 'ready'}
+                        onClick={() => toggleSample(key, api.takeUrl(character, take))}
+                        aria-label={`${sampleOf === key ? 'Stop' : 'Hear'} ${character.name}, ${take.emotion}`}
+                      >
+                        {take.state === 'ready' && <Icon name={sampleOf === key ? 'pause' : 'play'} size={12} />}
+                        {take.emotion}
+                      </button>
+                      {(making || take.state === 'failed') && <span className="take-note">{TAKE_NOTE[take.state]}</span>}
+                      {!making && (
+                        <button
+                          className="take-make"
+                          onClick={() => void makeTake(character, take)}
+                          aria-label={`${take.state === 'none' ? 'Make' : 'Make again'} ${character.name}, ${take.emotion}`}
+                        >
+                          {take.state === 'none' ? 'Make' : 'Make again'}
+                        </button>
+                      )}
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+            {takeProblem?.id === character.id && <p className="cast-error">{takeProblem.text}</p>}
             {openId === character.id && (
               <CharacterEditor
                 key={character.id}

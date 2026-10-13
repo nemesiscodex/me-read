@@ -271,15 +271,27 @@ class Store:
 
     # Characters
 
+    def characters_where(self, where, args=()):
+        """Characters with their takes, one for each emotion other than neutral."""
+        with self.lock:
+            characters = self.all(f"SELECT {CHARACTER} FROM character c WHERE {where} ORDER BY c.role != 'narrator', c.id", args)
+            ids = [c['id'] for c in characters]
+            made = {(t.pop('character_id'), t['emotion']): t for t in self.all(
+                f'SELECT t.character_id, t.emotion, {TAKE_STATE} AS state, t.rev FROM voice_take t '
+                f"JOIN character c ON c.id = t.character_id WHERE t.character_id IN ({','.join('?' * len(ids))})", ids)}
+        for c in characters:
+            c['takes'] = [made.get((c['id'], emotion), {'emotion': emotion, 'state': 'none', 'rev': 0})
+                          for emotion in DIRECTIONS]
+        return characters
+
     def characters(self, book_id):
-        return self.all(f"SELECT {CHARACTER} FROM character c WHERE c.book_id = ? "
-                        "ORDER BY c.role != 'narrator', c.id", (book_id,))
+        return self.characters_where('c.book_id = ?', (book_id,))
 
     def character(self, character_id):
-        return self.one(f'SELECT {CHARACTER} FROM character c WHERE c.id = ?', (character_id,))
+        return next(iter(self.characters_where('c.id = ?', (character_id,))), None)
 
     def narrator(self, book_id):
-        return self.one(f"SELECT {CHARACTER} FROM character c WHERE c.book_id = ? AND c.role = 'narrator'", (book_id,))
+        return next(iter(self.characters_where("c.book_id = ? AND c.role = 'narrator'", (book_id,))), None)
 
     def add_character(self, book_id, name, role='named', gender='unknown', age='adult', pitch='medium', description='',
                       appearance=''):
@@ -340,10 +352,7 @@ class Store:
             self.invalidate_audio('character_id = ?', (character_id,))
 
     def take(self, character_id, emotion):
-        """The character's take in an emotion: its emotion, state and revision."""
-        return self.one(f'SELECT t.emotion, {TAKE_STATE} AS state, t.rev FROM voice_take t '
-                        'JOIN character c ON c.id = t.character_id WHERE t.character_id = ? AND t.emotion = ?',
-                        (character_id, emotion)) or {'emotion': emotion, 'state': 'none', 'rev': 0}
+        return next(t for t in self.character(character_id)['takes'] if t['emotion'] == emotion)
 
     def request_take(self, character_id, emotion):
         """Have a take made now, or made again. Once it is ready, the lines read in it are read again."""
