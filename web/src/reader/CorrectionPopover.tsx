@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
-import { api, type Block, type Character, type CharacterInput, type Moment, type Segment } from '../api'
+import { api, EMOTIONS, type Block, type Character, type CharacterInput, type Emotion, type Moment, type Segment } from '../api'
 import { EMPTY_CHARACTER, sortCast } from '../lib/cast'
 import type { BlockRange } from '../lib/pages'
 import { hueStyle } from './BlockView'
@@ -15,6 +15,8 @@ interface Props {
   pages: { current: BlockRange | null; next: BlockRange | null }
   /** Illustrations are on and the paragraph has no starred picture yet. */
   canStar: boolean
+  /** The book's lines are read in their emotions, which only English books are. */
+  emotions: boolean
   onClose: () => void
   onSegment: (segment: Segment) => void
   onCharacter: (character: Character) => void
@@ -28,7 +30,7 @@ function excerpt(text: string): string {
   return flat.length > 90 ? `${flat.slice(0, 88).trimEnd()}…` : flat
 }
 
-export function CorrectionPopover({ bookId, segment, block, characters, at, pages, canStar, onClose, onSegment, onCharacter, onMoment }: Props) {
+export function CorrectionPopover({ bookId, segment, block, characters, at, pages, canStar, emotions, onClose, onSegment, onCharacter, onMoment }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const [position, setPosition] = useState(at)
   const [draft, setDraft] = useState<CharacterInput | null>(null)
@@ -77,6 +79,12 @@ export function CorrectionPopover({ bookId, segment, block, characters, at, page
   const assign = (characterId: number) =>
     attempt(async () => {
       onSegment(await api.setSpeaker(segment.id, characterId))
+      return null
+    })
+
+  const say = (emotion: Emotion) =>
+    attempt(async () => {
+      onSegment(await api.setEmotion(segment.id, emotion))
       return null
     })
 
@@ -164,6 +172,24 @@ export function CorrectionPopover({ bookId, segment, block, characters, at, page
               </li>
             ))}
           </ul>
+          {emotions && segment.kind === 'speech' && (
+            <>
+              <h3 className="popover-heading popover-heading-spaced">How is it said?</h3>
+              <div className="emotion-list">
+                {EMOTIONS.map((emotion) => (
+                  <button
+                    key={emotion}
+                    className="emotion-option"
+                    onClick={() => void say(emotion)}
+                    disabled={busy}
+                    aria-pressed={emotion === segment.emotion}
+                  >
+                    {emotion}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
           <div className="popover-actions">
             <button className="menu-button" onClick={() => setDraft(EMPTY_CHARACTER)} disabled={busy}>
               Someone new…

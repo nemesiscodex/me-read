@@ -145,7 +145,8 @@ def test_making_a_take_again_rereads_only_the_lines_in_that_emotion(world):
     world.drain()
     tom = cast(world)['Tom']['id']
     spoken, directed = len(world.engine.spoken), len(world.engine.directed)
-    world.store.request_take(tom, 'angry')
+    asked = world.client.post(f'/api/characters/{tom}/takes/angry').json()
+    assert asked['takes'][2] == {'emotion': 'angry', 'state': 'queued', 'rev': 1}
     world.drain()
     assert world.engine.directed[directed:] == [(f'{tom}.wav', 'angry')]
     assert [text for text, _, _ in world.engine.spoken[spoken:]] == ['Only me']
@@ -178,3 +179,35 @@ def test_merging_a_character_removes_its_takes(world):
     assert world.store.all('SELECT * FROM voice_take WHERE character_id = ?', (tom['id'],)) == []
     world.drain()
     assert heard(world, 'Only me') == f"{anna['id']}.angry.wav"
+
+
+def test_the_cast_shows_every_take_and_plays_the_ready_ones(world):
+    world.ask.answer = told([('n1', None), ('n2', 'angry'), ('n2', None), ('n3', None)])
+    focus(world)
+    world.drain()
+    tom = next(c for c in world.client.get(f"/api/books/{world.book['id']}").json()['characters'] if c['name'] == 'Tom')
+    assert [(t['emotion'], t['state']) for t in tom['takes']] == [
+        ('happy', 'none'), ('sad', 'none'), ('angry', 'ready'), ('scared', 'none'), ('whisper', 'none')]
+    url = f"/api/characters/{tom['id']}/takes"
+    reply = world.client.get(f'{url}/angry/audio')
+    assert reply.status_code == 200 and reply.content == world.store.take_path(tom, 'angry').read_bytes()
+    assert world.client.get(f'{url}/sad/audio').status_code == 404
+    assert world.client.get(f'{url}/neutral/audio').status_code == 404
+    assert world.client.post(f'{url}/bored').status_code == 404
+
+    world.client.post(f'{url}/sad')
+    world.drain()
+    assert world.client.get(f'{url}/sad/audio').status_code == 200
+    assert [text for text, _, _ in world.engine.spoken if text == 'Open up.'] == ['Open up.'], \
+        'a take nobody speaks in reads nothing again'
+
+
+def test_a_take_is_only_made_from_a_voice_of_an_english_book(world):
+    from conftest import SPANISH, make_epub
+    narrator = world.store.narrator(world.book['id'])
+    assert world.client.post(f"/api/characters/{narrator['id']}/takes/happy").status_code == 422, 'no voice yet'
+    book = world.client.post('/api/books', files={'file': ('es.epub', make_epub((SPANISH,)), 'application/epub+zip')}).json()
+    narrador = world.store.narrator(book['id'])
+    world.store.run("UPDATE character SET voice_state = 'ready' WHERE id = ?", (narrador['id'],))
+    assert world.client.post(f"/api/characters/{narrador['id']}/takes/happy").status_code == 422
+    assert world.store.take(narrador['id'], 'happy')['state'] == 'none'

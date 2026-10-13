@@ -778,6 +778,34 @@
   color: var(--ink-soft);
 }
 
+.popover-heading-spaced {
+  margin-top: 0.6rem;
+}
+
+.emotion-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  padding: 0 0.6em;
+}
+
+.emotion-option {
+  padding: 0.2em 0.65em;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: none;
+  font-size: 0.85rem;
+}
+
+.emotion-option:hover:not(:disabled) {
+  background: var(--wash);
+}
+
+.emotion-option[aria-pressed='true'] {
+  border-color: var(--ink);
+  font-weight: 700;
+}
+
 .popover-actions {
   margin-top: 0.5rem;
   padding-top: 0.5rem;
@@ -884,6 +912,66 @@
 
 .voice-note[data-voice='failed'] {
   color: var(--danger);
+}
+
+.take-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  padding: 0 0.5rem 0.35rem 2.15rem;
+}
+
+.take {
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+}
+
+.take[data-take='none'] {
+  border-style: dashed;
+}
+
+.take[data-take='queued'],
+.take[data-take='making'] {
+  animation: breathing 0.9s ease-in-out infinite alternate;
+}
+
+.take[data-take='failed'] .take-note {
+  color: var(--danger);
+}
+
+.take-play,
+.take-make {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2em;
+  padding: 0.2em 0.6em;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: inherit;
+}
+
+.take[data-take='ready'] .take-play {
+  color: var(--ink);
+}
+
+.take-note {
+  padding-right: 0.2em;
+}
+
+.take-make {
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.take-play:hover:not(:disabled),
+.take-make:hover {
+  background: var(--wash);
+  color: var(--ink);
 }
 
 .cast-error {

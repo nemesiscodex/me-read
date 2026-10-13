@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { block, segment } from './fixtures'
-import { nextPlayable, playability, playItems, segmentStatus } from './segments'
+import { nextPlayable, playability, playItems, segmentStatus, shownEmotion } from './segments'
 
 const untagged = { kind: 'speech', character_id: null, audio_state: 'none' } as const
 
@@ -56,5 +56,13 @@ describe('reading order', () => {
     expect(nextPlayable(items, 10)).toEqual({ id: 20, playability: 'pending' })
     expect(nextPlayable(items, 21)).toBeNull()
     expect(nextPlayable(items, 999)).toBeNull()
+  })
+})
+
+describe('shownEmotion', () => {
+  it('names how a line is said when it is not neutral and the book reads emotions', () => {
+    expect(shownEmotion(segment(1, { kind: 'speech', emotion: 'whisper' }), true)).toBe('whisper')
+    expect(shownEmotion(segment(1, { kind: 'speech', emotion: 'neutral' }), true)).toBeNull()
+    expect(shownEmotion(segment(1, { kind: 'speech', emotion: 'angry' }), false)).toBeNull()
   })
 })

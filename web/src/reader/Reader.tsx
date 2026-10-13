@@ -11,7 +11,7 @@ import { FONT_SIZE, SPEED, useNumberPref } from '../lib/prefs'
 import { readerReducer } from '../lib/readerState'
 import { loadPauses, pausesAfter, savePauses, type Pauses } from '../lib/pauses'
 import { bookHref, libraryHref } from '../lib/route'
-import { indexSegments, isUntagged, playItems, segmentStatus, type SegmentStatus } from '../lib/segments'
+import { indexSegments, isUntagged, playItems, segmentStatus, shownEmotion, type SegmentStatus } from '../lib/segments'
 import { BlockView, segmentIdAt, type ActiveMode } from './BlockView'
 import { CastPanel } from './CastPanel'
 import { CorrectionPopover } from './CorrectionPopover'
@@ -85,6 +85,7 @@ export function Reader({ bookId, place }: { bookId: number; place: Place | null 
     () => new Map((data?.book.characters ?? []).map((c): [number, Character] => [c.id, c])),
     [data?.book.characters],
   )
+  const emotions = data?.book.language === 'en'
   const narratorId = useMemo(() => narratorOf(data?.book.characters ?? [])?.id ?? null, [data?.book.characters])
 
   const clipUrl = useCallback(
@@ -301,14 +302,16 @@ export function Reader({ bookId, place }: { bookId: number; place: Place | null 
       const character = segment.character_id === null ? null : (characters.get(segment.character_id) ?? null)
       const voiced = character !== null && character.role !== 'narrator'
       if (status === 'ready' && !voiced) return null
+      const speaker = character?.name ?? (isUntagged(segment) ? 'Speaker unknown' : 'Narration')
+      const emotion = shownEmotion(segment, emotions)
       return {
-        speaker: character?.name ?? (isUntagged(segment) ? 'Speaker unknown' : 'Narration'),
+        speaker: emotion ? `${speaker} · ${emotion}` : speaker,
         hue: voiced ? characterHue(character.id) : null,
         note: status === 'failed' ? (segment.error ?? STATUS_NOTE.failed) : STATUS_NOTE[status],
         problem: status === 'failed' || status === 'tag-failed',
       }
     },
-    [segments, characters],
+    [segments, characters, emotions],
   )
 
   const closeCorrection = useCallback(() => setCorrecting(null), [])
@@ -503,6 +506,7 @@ export function Reader({ bookId, place }: { bookId: number; place: Place | null 
             next: blocksOn(pagination.spans, pagination.page + 1),
           }}
           canStar={illustrated && !pictures.get(correctingTarget.block.id)?.starred}
+          emotions={emotions}
           onClose={closeCorrection}
           onSegment={(segment) => dispatch({ type: 'segmentSaved', segment })}
           onCharacter={(character) => dispatch({ type: 'characterSaved', character })}
@@ -514,6 +518,7 @@ export function Reader({ bookId, place }: { bookId: number; place: Place | null 
         <CastPanel
           characters={data.book.characters}
           settings={settings}
+          emotions={emotions}
           onClose={closeCast}
           onCharacter={(character) => dispatch({ type: 'characterSaved', character })}
           onMerged={(id, into) => dispatch({ type: 'characterMerged', id, into })}

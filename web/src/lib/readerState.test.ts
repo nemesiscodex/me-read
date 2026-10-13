@@ -90,6 +90,18 @@ describe('server events', () => {
     expect(data.book.characters.map((c) => c.id)).toEqual([9])
   })
 
+  it('shows how a line is said once it is tagged or corrected', () => {
+    const line = { ...opened().blocks[1]!.segments[0]!, emotion: 'angry' as const, audio_state: 'none' as const }
+    const data = readerReducer(opened(), { type: 'event', event: { type: 'segments', segments: [line] } })!
+    expect(data.blocks[1]!.segments[0]).toMatchObject({ emotion: 'angry', audio_state: 'none' })
+  })
+
+  it('shows the takes of the cast as they are made', () => {
+    const making = character(2, { takes: [{ emotion: 'angry', state: 'making', rev: 0 }] })
+    const data = readerReducer(opened(), { type: 'event', event: { type: 'characters', characters: [making] } })!
+    expect(data.book.characters[0]!.takes).toEqual([{ emotion: 'angry', state: 'making', rev: 0 }])
+  })
+
   it('records what the workers are doing', () => {
     const activity = { tagger: 'Tagging 3', scenes: null, speech: null, images: 'Drawing the scene' }
     const data = readerReducer(opened(), { type: 'event', event: { type: 'activity', ...activity } })!

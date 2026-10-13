@@ -1,4 +1,4 @@
-import type { Block, Segment, TagState } from '../api'
+import type { Block, Emotion, Segment, TagState } from '../api'
 
 /** What one segment looks like on the page. Exactly one applies at a time. */
 export type SegmentStatus =
@@ -38,6 +38,11 @@ const UNTAGGED_STATUS: Record<TagState, SegmentStatus> = {
 
 export function isUntagged(segment: Segment): boolean {
   return segment.kind === 'speech' && segment.character_id === null
+}
+
+/** How a line is said, when it is not neutral in a book whose lines are read in their emotions. */
+export function shownEmotion(segment: Segment, emotions: boolean): Exclude<Emotion, 'neutral'> | null {
+  return emotions && segment.emotion !== 'neutral' ? segment.emotion : null
 }
 
 export function segmentStatus(segment: Segment, tagState: TagState): SegmentStatus {

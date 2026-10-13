@@ -424,6 +424,30 @@ def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers
             raise HTTPException(404, 'this character has no voice yet')
         return FileResponse(path, media_type='audio/wav', headers={'Cache-Control': 'private, max-age=31536000, immutable'})
 
+    def take_of(character_id, emotion):
+        if emotion not in DIRECTIONS:
+            raise HTTPException(404, f'there is no take for {emotion}')
+        return character_of(character_id)
+
+    @app.post('/api/characters/{character_id}/takes/{emotion}')
+    def request_take(character_id: int, emotion: str):
+        character = take_of(character_id, emotion)
+        if character['voice_state'] != 'ready':
+            raise HTTPException(422, f"{character['name']} has no voice to take it from yet")
+        if store.one('SELECT language FROM book WHERE id = ?', (character['book_id'],))['language'] != 'en':
+            raise HTTPException(422, 'lines are read in an emotion only in English books')
+        store.request_take(character_id, emotion)
+        announce(character['book_id'], '0')
+        return store.character(character_id)
+
+    @app.get('/api/characters/{character_id}/takes/{emotion}/audio')
+    def take_audio(character_id: int, emotion: str):
+        character = take_of(character_id, emotion)
+        path = store.take_path(character, emotion)
+        if store.take(character_id, emotion)['state'] != 'ready' or not path.exists():
+            raise HTTPException(404, f"{character['name']} has no {emotion} take yet")
+        return FileResponse(path, media_type='audio/wav', headers={'Cache-Control': 'private, max-age=31536000, immutable'})
+
     @app.post('/api/characters/{character_id}/merge', status_code=204)
     def merge_character(character_id: int, body: Merge):
         character, into = character_of(character_id), character_of(body.into)

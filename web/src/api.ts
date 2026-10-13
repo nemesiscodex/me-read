@@ -12,6 +12,16 @@ export type DrawState = 'none' | 'drawing' | 'ready' | 'failed'
 export type Provider = 'claude' | 'codex'
 export const EMOTIONS = ['neutral', 'happy', 'sad', 'angry', 'scared', 'whisper'] as const
 export type Emotion = (typeof EMOTIONS)[number]
+/** 'none' also for a take made from a voice the character no longer has; it is made again when a line needs it. */
+export type TakeState = 'none' | 'queued' | 'making' | 'ready' | 'failed'
+
+/** The character's voice directed into an emotion. Lines in that emotion are read from it once it is ready. */
+export interface Take {
+  emotion: Exclude<Emotion, 'neutral'>
+  state: TakeState
+  /** Bumped each time the take is made again by hand. */
+  rev: number
+}
 
 export interface Character {
   id: number
@@ -35,6 +45,8 @@ export interface Character {
   portrait_rev: number
   portrait_error: string | null
   line_count: number
+  /** One for each emotion other than neutral, in the order of EMOTIONS. Neutral is the voice itself. */
+  takes: Take[]
 }
 
 /** A paragraph where the picture changes: a new one is shown, or with kind 'clear' the last one is taken down. */
@@ -201,6 +213,9 @@ export const api = {
   /** Assign a line to a character. Its audio is regenerated in the new voice. */
   setSpeaker: (segmentId: number, characterId: number) =>
     request<Segment>(`/api/segments/${segmentId}`, json('PATCH', { character_id: characterId })),
+  /** Say how a spoken line is said. Its audio is regenerated in that emotion. */
+  setEmotion: (segmentId: number, emotion: Emotion) =>
+    request<Segment>(`/api/segments/${segmentId}`, json('PATCH', { emotion })),
   /** Take another reading of the same line with a new seed. */
   regenerateSegment: (segmentId: number) => request<Segment>(`/api/segments/${segmentId}/regenerate`, json('POST')),
   /** Ask the tagger to label a paragraph's spoken lines again. */
@@ -220,6 +235,9 @@ export const api = {
   /** Make the candidate the character's voice. Their lines are read again in it. */
   approveDraft: (id: number) => request<Character>(`/api/characters/${id}/voice/draft/approve`, json('POST')),
   uploadVoice: (id: number, file: File) => request<Character>(`/api/characters/${id}/voice`, upload(file)),
+  /** Make the take now, or make it again. Lines already read in it are read again in the new take. English books only. */
+  makeTake: (id: number, emotion: Take['emotion']) =>
+    request<Character>(`/api/characters/${id}/takes/${emotion}`, json('POST')),
   /** Draw the portrait again with a new seed, and the pictures the character is in. */
   redrawPortrait: (id: number) => request<Character>(`/api/characters/${id}/portrait/redraw`, json('POST')),
   /** One Claude or Codex call over every paragraph of the book about the character. Replaces the appearance. */
@@ -233,6 +251,8 @@ export const api = {
 
   audioUrl: (segment: Segment) => `/api/segments/${segment.id}/audio?v=${segment.audio_rev}`,
   voiceUrl: (character: Character) => `/api/characters/${character.id}/voice?v=${character.voice_rev}`,
+  takeUrl: (character: Character, take: Take) =>
+    `/api/characters/${character.id}/takes/${take.emotion}/audio?v=${character.voice_rev}.${take.rev}`,
   draftUrl: (character: Character) => `/api/characters/${character.id}/voice/draft?v=${character.draft_rev}`,
   portraitUrl: (character: Character) => `/api/characters/${character.id}/portrait?v=${character.portrait_rev}`,
   momentUrl: (moment: Moment) => `/api/moments/${moment.id}/image?v=${moment.image_rev}`,
