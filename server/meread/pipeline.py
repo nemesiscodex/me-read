@@ -219,10 +219,16 @@ class Pipeline:
     # Voices and clips
 
     def speech_step(self):
-        """Generate the next missing clip in focus, designing its voice first when needed."""
+        """Generate the next missing clip in focus, designing its voice or making its take first when needed."""
         draft = self.store.one("SELECT id FROM character WHERE draft_state = 'queued' ORDER BY id LIMIT 1")
         if draft:
             self.design_draft(self.store.character(draft['id']))
+            return True
+        queued = self.store.one("SELECT character_id, emotion FROM voice_take WHERE state = 'queued' "
+                                'ORDER BY character_id, emotion LIMIT 1')
+        if queued:
+            self.make_take(self.store.character(queued['character_id']),
+                           self.store.take(queued['character_id'], queued['emotion']))
             return True
         focus = self.focus
         if not focus:
@@ -247,7 +253,7 @@ class Pipeline:
         # While tagging is paused the narrator reads lines that have no speaker yet.
         paused = self.store.settings()['tagging_paused']
         seg = self.store.one(
-            "SELECT s.id, s.text, s.audio_rev, s.character_id FROM segment s "
+            "SELECT s.id, s.text, s.audio_rev, s.character_id, s.emotion FROM segment s "
             "WHERE s.book_id = ? AND s.block_idx BETWEEN ? AND ? AND s.audio_state = 'none' "
             'AND (s.character_id IS NOT NULL OR ?) ORDER BY s.block_idx < ?, s.block_idx, s.seq LIMIT 1',
             (book_id, focus['first'], focus['last'], paused, focus['current_first']))
@@ -260,7 +266,14 @@ class Pipeline:
             elif character['voice_state'] != 'ready':
                 self.design_voice(character)
             else:
-                self.generate(book_id, seg, character)
+                # Breeze directs emotions in English only.
+                emotion = seg['emotion'] if self._language(book_id) == 'en' else 'neutral'
+                take = self.store.take(character['id'], emotion) if emotion != 'neutral' else None
+                if take and take['state'] in ('none', 'queued'):
+                    self.make_take(character, take)
+                else:
+                    # A line whose take could not be made is read in the character's own voice.
+                    self.generate(book_id, seg, character, emotion if take and take['state'] == 'ready' else 'neutral')
             return True
         waiting = self.store.one("SELECT id FROM character WHERE book_id = ? AND voice_state = 'none' LIMIT 1", (book_id,))
         if waiting:
@@ -331,17 +344,46 @@ class Pipeline:
                            "AND draft_state = 'designing'", (character['id'], rev))
         self._publish_cast(book_id)
 
-    def generate(self, book_id, seg, character):
+    def make_take(self, character, take):
+        """Have Breeze direct the character's voice into a take of an emotion. When the take was asked for by hand, the
+        lines already read in that emotion are read again once it lands."""
+        character_id, emotion, rev, book_id = character['id'], take['emotion'], take['rev'], character['book_id']
+        self.store.run('INSERT OR IGNORE INTO voice_take (character_id, emotion) VALUES (?, ?)', (character_id, emotion))
+        if not self.store.run("UPDATE voice_take SET state = 'making', made_from = ?, error = NULL WHERE character_id = ? "
+                              "AND emotion = ? AND rev = ? AND state != 'making'",
+                              (character['voice_rev'], character_id, emotion, rev)).rowcount:
+            return
+        self._publish_cast(book_id)
+        self._say('speech', f"Directing {character['name']}'s voice: {emotion}")
+        def settle(state, error=None):
+            return self.store.run('UPDATE voice_take SET state = ?, error = ? WHERE character_id = ? AND emotion = ? '
+                                  "AND rev = ? AND state = 'making'", (state, error, character_id, emotion, rev)).rowcount
+        try:
+            audio, rate = self.engine.direct(self.store.voice_path(character), emotion,
+                                             seed=character_id * 1000 + 700 + rev)
+            landed = self._land(lambda tmp: sf.write(tmp, audio, rate, format='WAV'),
+                                self.store.take_path(character, emotion), lambda: settle('ready'))
+            if landed and take['state'] == 'queued':
+                where = "character_id = ? AND emotion = ? AND kind = 'speech'", (character_id, emotion)
+                self.store.invalidate_audio(*where)
+                self._publish_segments(book_id, *where)
+        except Exception as e:
+            log.exception('the %s take failed for %s', emotion, character['name'])
+            settle('failed', str(e)[:300])
+        self._publish_cast(book_id)
+
+    def generate(self, book_id, seg, character, emotion='neutral'):
         claim = (seg['id'], seg['audio_rev'])
         if not self.store.run("UPDATE segment SET audio_state = 'generating' WHERE id = ? AND audio_rev = ? "
                               "AND audio_state = 'none'", claim).rowcount:
             return
         self._publish_segments(book_id, 'id = ?', (seg['id'],))
-        self._say('speech', f"Reading as {character['name']}")
+        self._say('speech', f"Reading as {character['name']}" + ('' if emotion == 'neutral' else f', {emotion}'))
+        voice = self.store.voice_path(character) if emotion == 'neutral' else self.store.take_path(character, emotion)
         try:
             text = speakable(seg['text'])
             if text:
-                audio, rate = self.engine.speak(text, self.store.voice_path(character), seed=seg['audio_rev'] * 1000 + 42,
+                audio, rate = self.engine.speak(text, voice, seed=seg['audio_rev'] * 1000 + 42,
                                                 language=self._language(book_id))
             else:
                 audio, rate = np.zeros(int(SILENCE[0] * SILENCE[1]), dtype='float32'), SILENCE[1]

@@ -9,6 +9,7 @@ import pytest
 import soundfile as sf
 
 from meread import speech
+from meread.emotions import DIRECTIONS
 
 
 def recording(path, level=0.1, seconds=7, rate=24000, stereo=False):
@@ -59,12 +60,12 @@ def models(monkeypatch):
     class Breeze:
         sample_rate = 24000
 
-        def generate(self, *, text, ref_audio, ref_text, seed, stream):
+        def generate(self, *, text, ref_audio, ref_text, seed, stream, **direction):
             assert isinstance(ref_audio, str)
             state.spoken.append({'text': text, 'wav': Path(ref_audio).read_bytes(), 'ref_text': ref_text,
-                                 'seed': seed, 'stream': stream})
+                                 'seed': seed, 'stream': stream, **direction})
             mx.random.seed(seed)
-            yield result(self.sample_rate)
+            yield result(self.sample_rate, seconds=20 if direction else 0.5)
 
     class Chatterbox:
         sample_rate = 24000
@@ -218,6 +219,28 @@ def test_breeze_gets_a_filename_for_the_exact_saved_wav_and_its_transcript(tmp_p
     engine.speak('Again.', voice, 78)
     assert len(models.transcribed) == 1
     assert models.loads == [speech.TRANSCRIBER, speech.PROVIDERS['breeze'].models[0]]
+
+
+@pytest.mark.parametrize('provider', ['chatterbox', 'fish'])
+def test_breeze_directs_an_emotion_take_of_any_saved_voice_whichever_narrator_reads(tmp_path, models, provider):
+    voice = recording(tmp_path / 'voice.wav', rate=44100)
+    engine = speech.Engine(tmp_path / 'hub', provider)
+    audio, rate = engine.direct(voice, 'angry', 9)
+    instruction, script = DIRECTIONS['angry']
+    assert models.spoken[0] == {'text': script, 'wav': voice.read_bytes(), 'ref_text': 'Primera frase.', 'seed': 9,
+                               'stream': False, 'instruct': instruction, 'cfg_scale': 4.0}
+    assert rate == 24000 and len(audio) == speech.SAMPLE_SECONDS * rate
+    assert models.loads == [speech.BREEZE, speech.TRANSCRIBER]
+    engine.direct(voice, 'sad', 9)
+    assert models.loads == [speech.BREEZE, speech.TRANSCRIBER], 'the director and the transcript are kept'
+
+
+def test_the_breeze_narrator_also_directs_takes(tmp_path, models):
+    voice = recording(tmp_path / 'voice.wav')
+    engine = speech.Engine(tmp_path / 'hub', 'breeze')
+    engine.speak('Hello.', voice, 77)
+    engine.direct(voice, 'whisper', 9)
+    assert models.loads == [speech.TRANSCRIBER, speech.BREEZE]
 
 
 def test_breeze_rejects_spanish_before_reading_the_reference_or_loading_any_model(tmp_path, models):

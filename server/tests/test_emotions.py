@@ -91,3 +91,90 @@ def test_a_library_from_before_emotions_opens_with_every_line_neutral(tmp_path):
     old.close()
     store = Store(tmp_path)
     assert (store.segment(1)['emotion'], store.segment(1)['audio_state']) == ('neutral', 'ready')
+
+
+def cast(w, book_id=None):
+    return {c['name']: c for c in w.store.characters(book_id or w.book['id'])}
+
+
+def heard(w, text):
+    """The voice file the last reading of a line was spoken from."""
+    return next(voice for said, voice, _ in reversed(w.engine.spoken) if said == text)
+
+
+def test_a_line_in_an_emotion_is_read_from_a_take_made_once(world):
+    world.ask.answer = told([('n1', None), ('n2', 'angry'), ('n2', 'angry'), ('n3', None)])
+    focus(world)
+    world.drain()
+    tom = cast(world)['Tom']['id']
+    assert world.engine.directed == [(f'{tom}.wav', 'angry')]
+    assert (heard(world, 'Only me'), heard(world, 'Open up.')) == (f'{tom}.angry.wav', f'{tom}.angry.wav')
+    assert heard(world, 'Who goes there?') == f"{cast(world)['Guard 1']['id']}.wav"
+    assert world.store.take_path(cast(world)['Tom'], 'angry').exists()
+
+
+def test_a_take_that_cannot_be_made_leaves_the_line_in_the_characters_own_voice(world):
+    world.engine.direct_error = RuntimeError('Breeze is not installed')
+    world.ask.answer = told([('n1', None), ('n2', 'angry'), ('n2', 'angry'), ('n3', None)])
+    focus(world)
+    world.drain()
+    tom = cast(world)['Tom']['id']
+    assert len(world.engine.directed) == 1, 'a failed take is not tried again for every line'
+    assert (heard(world, 'Only me'), heard(world, 'Open up.')) == (f'{tom}.wav', f'{tom}.wav')
+    assert all(s['audio_state'] == 'ready' for b in world.chapter() for s in b['segments'])
+    assert world.store.take(tom, 'angry')['state'] == 'failed'
+
+
+def test_a_new_voice_makes_its_takes_again_when_a_line_needs_them(world):
+    world.ask.answer = told([('n1', None), ('n2', 'angry'), ('n2', None), ('n3', None)])
+    focus(world)
+    world.drain()
+    tom = cast(world)['Tom']['id']
+    world.client.post(f'/api/characters/{tom}/voice/draft')
+    world.drain()
+    world.client.post(f'/api/characters/{tom}/voice/draft/approve')
+    assert world.store.take(tom, 'angry')['state'] == 'none'
+    world.drain()
+    assert world.engine.directed == [(f'{tom}.wav', 'angry')] * 2
+    assert world.store.take(tom, 'angry')['state'] == 'ready' and heard(world, 'Only me') == f'{tom}.angry.wav'
+
+
+def test_making_a_take_again_rereads_only_the_lines_in_that_emotion(world):
+    world.ask.answer = told([('n1', 'angry'), ('n2', 'angry'), ('n2', 'sad'), ('n3', None)])
+    focus(world)
+    world.drain()
+    tom = cast(world)['Tom']['id']
+    spoken, directed = len(world.engine.spoken), len(world.engine.directed)
+    world.store.request_take(tom, 'angry')
+    world.drain()
+    assert world.engine.directed[directed:] == [(f'{tom}.wav', 'angry')]
+    assert [text for text, _, _ in world.engine.spoken[spoken:]] == ['Only me']
+    assert world.store.take(tom, 'angry') == {'emotion': 'angry', 'state': 'ready', 'rev': 1}
+
+
+def test_a_spanish_book_reads_every_line_in_the_characters_own_voice(world):
+    from conftest import SPANISH, make_epub
+    book = world.client.post('/api/books', files={'file': ('es.epub', make_epub((SPANISH,)), 'application/epub+zip')}).json()
+    world.ask.answer = lambda prompt: {
+        'new_characters': [{'ref': 'n1', 'name': 'Guardia 1', 'role': 'extra', 'gender': 'male', 'age': 'adult',
+                            'pitch': 'low', 'description': 'gruff sentry'}],
+        'lines': [{'q': i + 1, 'speaker': 'n1', 'emotion': 'angry'} for i in range(prompt.count('[[q'))]}
+    world.client.post(f"/api/books/{book['id']}/focus", json={'first': 0, 'last': 5, 'current_first': 0, 'current_last': 5})
+    world.drain()
+    guard = cast(world, book['id'])['Guardia 1']['id']
+    assert world.engine.directed == []
+    assert heard(world, '¿Quién anda ahí?') == f'{guard}.wav'
+    assert world.store.one('SELECT emotion FROM segment WHERE book_id = ? AND character_id = ? LIMIT 1',
+                           (book['id'], guard))['emotion'] == 'angry'
+
+
+def test_merging_a_character_removes_its_takes(world):
+    world.ask.answer = told([('n1', None), ('n2', 'angry'), ('n2', None), ('n3', None)])
+    focus(world)
+    world.drain()
+    tom, anna = cast(world)['Tom'], cast(world)['Anna']
+    world.client.post(f"/api/characters/{tom['id']}/merge", json={'into': anna['id']})
+    assert not world.store.take_path(tom, 'angry').exists()
+    assert world.store.all('SELECT * FROM voice_take WHERE character_id = ?', (tom['id'],)) == []
+    world.drain()
+    assert heard(world, 'Only me') == f"{anna['id']}.angry.wav"
