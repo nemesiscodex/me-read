@@ -15,12 +15,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
 from . import epub, scenes, speech, tagger
+from .emotions import EMOTIONS
 from .pipeline import Pipeline
 from .store import FEATURING, MAX_PICTURES_PER_PAGE, Store, illustrating
 
 Gender = Literal['male', 'female', 'unknown']
 Age = Literal['child', 'teen', 'adult', 'elderly']
 Pitch = Literal['low', 'medium', 'high']
+Emotion = Literal[EMOTIONS]
 
 
 class CharacterInput(BaseModel):
@@ -77,8 +79,9 @@ class Span(BaseModel):
     last: int
 
 
-class Speaker(BaseModel):
-    character_id: int
+class LineChanges(BaseModel):
+    character_id: Optional[int] = None
+    emotion: Optional[Emotion] = None
 
 
 class Merge(BaseModel):
@@ -260,11 +263,15 @@ def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers
                                  media_type='text/event-stream', headers={'Cache-Control': 'no-cache'})
 
     @app.patch('/api/segments/{segment_id}')
-    def set_speaker(segment_id: int, body: Speaker):
+    def correct_line(segment_id: int, body: LineChanges):
         book_id = segment_book(segment_id)
-        if character_of(body.character_id)['book_id'] != book_id:
+        if body.character_id is None and body.emotion is None:
+            raise HTTPException(422, 'say who speaks the line or how it is said')
+        if body.character_id is not None and character_of(body.character_id)['book_id'] != book_id:
             raise HTTPException(422, 'that character belongs to another book')
-        segment = store.set_speaker(segment_id, body.character_id)
+        if body.emotion not in (None, 'neutral') and store.segment(segment_id)['kind'] != 'speech':
+            raise HTTPException(422, 'only spoken lines are said with an emotion')
+        segment = store.correct_line(segment_id, body.character_id, body.emotion)
         announce(book_id, 'id = ?', (segment_id,))
         return segment
 

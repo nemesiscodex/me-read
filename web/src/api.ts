@@ -10,6 +10,8 @@ export type AudioState = 'none' | 'generating' | 'ready' | 'failed'
 export type DraftState = 'none' | 'queued' | 'designing' | 'ready' | 'failed'
 export type DrawState = 'none' | 'drawing' | 'ready' | 'failed'
 export type Provider = 'claude' | 'codex'
+export const EMOTIONS = ['neutral', 'happy', 'sad', 'angry', 'scared', 'whisper'] as const
+export type Emotion = (typeof EMOTIONS)[number]
 
 export interface Character {
   id: number
@@ -68,6 +70,8 @@ export interface Segment {
   kind: 'narration' | 'speech'
   /** null while a spoken line is still waiting for the tagger. */
   character_id: number | null
+  /** How a spoken line is said. Narration is always neutral. */
+  emotion: Emotion
   audio_state: AudioState
   audio_rev: number
   duration: number | null

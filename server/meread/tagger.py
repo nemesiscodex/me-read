@@ -5,6 +5,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from .emotions import EMOTIONS
+
 GENDERS, AGES, PITCHES = ('male', 'female', 'unknown'), ('child', 'teen', 'adult', 'elderly'), ('low', 'medium', 'high')
 LANGUAGE_NAMES = {'en': 'English', 'es': 'Spanish'}
 SCHEMA = {
@@ -21,19 +23,24 @@ SCHEMA = {
                 'pitch': {'type': 'string', 'enum': list(PITCHES)},
                 'description': {'type': 'string'}}}},
         'lines': {'type': 'array', 'items': {
-            'type': 'object', 'additionalProperties': False, 'required': ['q', 'speaker'],
-            'properties': {'q': {'type': 'integer'}, 'speaker': {'type': 'string'}}}}}}
-SYSTEM = """You attribute dialogue in a book so it can be read aloud with a different voice for each character.
+            'type': 'object', 'additionalProperties': False, 'required': ['q', 'speaker', 'emotion'],
+            'properties': {'q': {'type': 'integer'}, 'speaker': {'type': 'string'},
+                           'emotion': {'type': 'string', 'enum': list(EMOTIONS)}}}}}}
+SYSTEM = f"""You attribute dialogue in a book so it can be read aloud with a different voice for each character.
 
 You get the cast found so far, some earlier text for context, and the text to attribute. In that text every \
 spoken line starts with a marker such as [[q7]]. A spoken line is a quotation, or in books that write dialogue with \
 dashes (—Hola —dijo Ana—. ¿Vienes?) a stretch of what the character says.
 
-Return one entry in `lines` for every marker: {"q": 7, "speaker": REF}. REF is one of:
+Return one entry in `lines` for every marker: {{"q": 7, "speaker": REF, "emotion": EMOTION}}. REF is one of:
 - the ref of a cast member, such as "c12"
 - the ref of a character you add in `new_characters`, such as "n1"
 - "narrator", when the marked text is not said or thought by a character: a title, a sign, a quoted word or \
 phrase, or plain narration that follows a dialogue tag (—Sí —dijo Ana. [[q2]]Luego salió de la sala.)
+
+EMOTION is how the line is said: {', '.join(EMOTIONS)}. It is "neutral" unless the text shows how it is said: \
+a dialogue tag such as shouted, whispered or sobbed, an exclamation, or the scene. Use "whisper" for whispered or \
+murmured lines. A line whose speaker is "narrator" is "neutral".
 
 Rules:
 - Use dialogue tags, turn-taking and context, and always pick the most likely speaker. A quoted thought belongs to \
@@ -173,10 +180,11 @@ def apply(store, book_id, markers, answer):
         if not isinstance(line, dict):
             continue
         segment_id, character_id = markers.get(line.get('q')), refs.get(line.get('speaker'))
+        emotion = 'neutral' if character_id == refs['narrator'] else _pick(line.get('emotion'), EMOTIONS, 'neutral')
         if segment_id and character_id:
             with store.lock:
-                if store.run('UPDATE segment SET character_id = ? WHERE id = ? AND character_id IS NULL',
-                             (character_id, segment_id)).rowcount:
+                if store.run('UPDATE segment SET character_id = ?, emotion = ? WHERE id = ? AND character_id IS NULL',
+                             (character_id, emotion, segment_id)).rowcount:
                     # The narrator may have read this line while tagging was paused.
                     store.invalidate_audio("id = ? AND audio_state != 'none'", (segment_id,))
             assigned.append(segment_id)

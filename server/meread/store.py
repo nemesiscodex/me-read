@@ -5,8 +5,10 @@ import threading
 from pathlib import Path
 
 from . import epub, segment
+from .emotions import EMOTIONS
 
-SCHEMA = """
+EMOTION = f"TEXT NOT NULL DEFAULT 'neutral' CHECK (emotion IN ({', '.join(repr(e) for e in EMOTIONS)}))"
+SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS generation_identity (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1), identity TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS book (
@@ -44,7 +46,7 @@ CREATE TABLE IF NOT EXISTS segment (
   text TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('narration', 'speech')),
   character_id INTEGER REFERENCES character(id),
   audio_state TEXT NOT NULL DEFAULT 'none' CHECK (audio_state IN ('none', 'generating', 'ready', 'failed')),
-  audio_rev INTEGER NOT NULL DEFAULT 0, duration REAL, error TEXT);
+  audio_rev INTEGER NOT NULL DEFAULT 0, duration REAL, error TEXT, emotion {EMOTION});
 CREATE INDEX IF NOT EXISTS segment_order ON segment (book_id, block_idx, seq);
 CREATE INDEX IF NOT EXISTS segment_character ON segment (character_id);
 CREATE TABLE IF NOT EXISTS moment (
@@ -62,7 +64,7 @@ CREATE TABLE IF NOT EXISTS moment_character (
   PRIMARY KEY (moment_id, character_id));
 CREATE INDEX IF NOT EXISTS moment_character_of ON moment_character (character_id);
 """
-SEGMENT = 'id, block_id, seq, text, kind, character_id, audio_state, audio_rev, duration, error'
+SEGMENT = 'id, block_id, seq, text, kind, character_id, emotion, audio_state, audio_rev, duration, error'
 CHARACTER = ('c.id, c.book_id, c.name, c.role, c.gender, c.age, c.pitch, c.description, c.voice_state, c.voice_rev, '
              'c.error, c.draft_state, c.draft_rev, c.appearance, c.portrait_state, c.portrait_rev, c.portrait_error, (SELECT COUNT(*) FROM segment s WHERE s.character_id = c.id AND s.kind = \'speech\') AS line_count')
 MOMENT = ('m.id, m.block_id, m.block_idx, m.kind, m.title, m.summary, m.scene, m.importance, m.image_state, m.image_rev, '
@@ -82,7 +84,8 @@ ADDED_COLUMNS = {'book': {'language': "TEXT NOT NULL DEFAULT 'en'", 'position_se
     'block': {'scene_state': "TEXT NOT NULL DEFAULT 'pending' CHECK (scene_state IN ('pending', 'scanning', 'done'))"},
     'moment': {'wanted': 'INTEGER NOT NULL DEFAULT 0', 'starred': 'INTEGER NOT NULL DEFAULT 0',
                'title': "TEXT NOT NULL DEFAULT ''", 'summary': "TEXT NOT NULL DEFAULT ''",
-               'importance': 'INTEGER NOT NULL DEFAULT 5'}}
+               'importance': 'INTEGER NOT NULL DEFAULT 5'},
+    'segment': {'emotion': EMOTION}}
 
 
 def illustrating(settings):
@@ -346,19 +349,22 @@ class Store:
         self.run(f"UPDATE segment SET audio_state = 'none', audio_rev = audio_rev + 1, duration = NULL, error = NULL "
                  f"WHERE {where}", args)
 
-    def set_speaker(self, segment_id, character_id):
+    def correct_line(self, segment_id, character_id=None, emotion=None):
+        """Change who says a line or how, and have it read again."""
         with self.lock:
-            self.run('UPDATE segment SET character_id = ? WHERE id = ?', (character_id, segment_id))
+            self.run('UPDATE segment SET character_id = COALESCE(?, character_id), emotion = COALESCE(?, emotion) '
+                     'WHERE id = ?', (character_id, emotion, segment_id))
             self.invalidate_audio('id = ?', (segment_id,))
             return self.segment(segment_id)
 
     def retag_blocks(self, where, args=()):
-        """Clear the speakers of matching paragraphs and send them back to the tagger. Returns their ids."""
+        """Clear the speakers and emotions of matching paragraphs and send them back to the tagger. Returns their ids."""
         with self.lock:
             ids = [row['id'] for row in self.all(f'SELECT id FROM block WHERE {where}', args)]
             if ids:
                 marks = ','.join('?' * len(ids))
-                self.run(f"UPDATE segment SET character_id = NULL WHERE block_id IN ({marks}) AND kind = 'speech'", ids)
+                self.run(f"UPDATE segment SET character_id = NULL, emotion = 'neutral' "
+                         f"WHERE block_id IN ({marks}) AND kind = 'speech'", ids)
                 self.invalidate_audio(f"block_id IN ({marks}) AND kind = 'speech'", ids)
                 self.run(f"UPDATE block SET tag_state = 'pending' WHERE id IN ({marks})", ids)
             return ids
