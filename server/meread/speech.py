@@ -251,11 +251,10 @@ class Remote:
         self.host, self.base, self.consent = parts.netloc, f'{parts.scheme}://{parts.netloc}{path}', consent
         self.opener = urllib.request.build_opener(NoRedirect)
 
-    def upload(self, name, wav, transcript):
+    def upload(self, name, wav):
         boundary = uuid.uuid4().hex
         body = form(boundary, [('voice', wav, 'reference.wav'), ('name', name.encode(), None),
-                               ('consent_attestation', self.consent.encode(), None),
-                               ('transcript', transcript.encode(), None)])
+                               ('consent_attestation', self.consent.encode(), None)])
         request = urllib.request.Request(f'{self.base}/v1/voices', data=body, method='POST',
                                          headers={'Content-Type': f'multipart/form-data; boundary={boundary}'})
         try:
@@ -681,7 +680,7 @@ class Engine:
 
     def _uploaded(self, name, wav):
         def upload():
-            self.remote.upload(name, wav, self._transcript(wav))
+            self.remote.upload(name, wav)
             return True
         self._cached(self.uploads, name, upload)
 
