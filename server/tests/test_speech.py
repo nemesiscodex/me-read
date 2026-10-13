@@ -230,9 +230,9 @@ def test_breeze_directs_an_emotion_take_of_any_saved_voice_whichever_narrator_re
     assert models.spoken[0] == {'text': script, 'wav': voice.read_bytes(), 'ref_text': 'Primera frase.', 'seed': 9,
                                'stream': False, 'instruct': instruction, 'cfg_scale': 4.0}
     assert rate == 24000 and len(audio) == speech.SAMPLE_SECONDS * rate
-    assert models.loads == [speech.BREEZE, speech.TRANSCRIBER]
+    assert models.loads == [speech.TRANSCRIBER, speech.BREEZE]
     engine.direct(voice, 'sad', 9)
-    assert models.loads == [speech.BREEZE, speech.TRANSCRIBER], 'the director and the transcript are kept'
+    assert models.loads == [speech.TRANSCRIBER, speech.BREEZE], 'the director and the transcript are kept'
 
 
 def test_the_breeze_narrator_also_directs_takes(tmp_path, models):

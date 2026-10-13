@@ -184,7 +184,7 @@ def test_speech_request_carries_transcript_consent_seed_and_disclaimer_off(tmp_p
     engine = remote_engine(tmp_path, speech_server)
     engine.speak('Hello there.', voice, 77)
     assert speech_server.speeches == [{
-        'input': 'Hello there.', 'voice': name_for(voice.read_bytes()), 'ref_text': 'The saved words.', 'seed': 77,
+        'model': 'breeze', 'input': 'Hello there.', 'voice': name_for(voice.read_bytes()), 'ref_text': 'The saved words.', 'seed': 77,
         'response_format': 'wav', 'consent_attestation': CONSENT, 'spoken_disclaimer': False}]
     upload = speech_server.uploads[0]
     assert (upload['transcript'], upload['consent_attestation'], upload['name']) == (
