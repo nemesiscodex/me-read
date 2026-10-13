@@ -1,7 +1,6 @@
 #!/bin/sh
-# Build the web app and start the server that serves it. Arguments go to the server, e.g. ./start --port 9000
+# Start the app and its GPU service. See ./start --help for local and illustration modes.
 set -e
 cd "$(dirname "$0")"
 
-(cd web && pnpm install --silent && pnpm build)
-cd server && exec uv run python -m meread "$@"
+cd server && exec uv run --frozen python -m meread.launch "$@"

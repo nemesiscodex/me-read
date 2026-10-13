@@ -5,10 +5,10 @@ from pathlib import Path
 import uvicorn
 
 from . import HOME, speech
-from .app import create_app
+from .app import SettingsChanges, create_app
 
 
-def main():
+def argument_parser():
     parser = argparse.ArgumentParser(prog='meread', description='Run the me-read server.')
     parser.add_argument('--host', default='127.0.0.1')
     parser.add_argument('--port', type=int, default=8765)
@@ -21,14 +21,23 @@ def main():
                                           'narrates for chatterbox and breeze-gguf; fish and breeze still narrate here')
     parser.add_argument('--tts-consent', help='your own statement that you may use the reference voices; required with '
                                               '--tts-url, sent with every request, and has no default')
+    parser.add_argument('--image-url', help='set the image service address before workers start; an empty string disables pictures')
+    return parser
+
+
+def main():
+    parser = argument_parser()
     args = parser.parse_args()
     try:
         speech.connect(args.tts_provider, args.tts_url, args.tts_consent)
+        images = SettingsChanges(image_url=args.image_url) if args.image_url is not None else None
     except ValueError as e:
         parser.error(str(e))
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(name)s %(message)s')
     web = Path(__file__).resolve().parents[2] / 'web/dist'
     app = create_app(args.home, web_dir=web, tts_provider=args.tts_provider, tts_url=args.tts_url, tts_consent=args.tts_consent)
+    if images is not None:
+        app.state.store.update_settings(images.model_dump(exclude_unset=True))
 
     class Server(uvicorn.Server):
         def handle_exit(self, sig, frame):
