@@ -1,23 +1,17 @@
 [Unit]
-Description=me-read speech server (CrispASR, Breeze TTS 2)
+Description=me-read speech service (Breeze, Qwen, Chatterbox)
 After=network-online.target
 # The image service and this one cannot share a 16 GB card. Starting either stops the other.
 Conflicts=me-read-imager.service
 
 [Service]
-Type=simple
 WorkingDirectory=%h/me-read-speech
-Environment=HOST=127.0.0.1
-Environment=PORT=8781
-Environment=BIN=%h/me-read-speech/build/bin/crispasr
-Environment=MODEL=%h/me-read-speech/models/breeze-tts-2-q4_k.gguf
-Environment=VOICE_DIR=%h/me-read-speech/voices
-Environment=ROCM_ROOT=%h/me-read-speech
-ExecStart=%h/me-read-speech/run-speech-service.sh
+# Where CrispASR finds the hipBLAS and rocBLAS libraries. Override it in a drop-in if yours are elsewhere.
+Environment=CRISPASR_LIBRARY_PATH=/opt/rocm/lib
+ExecStart=/usr/bin/uv run --frozen python server.py --crispasr-library-path $CRISPASR_LIBRARY_PATH
 Restart=on-failure
 RestartSec=10
-KillMode=control-group
-TimeoutStopSec=30
+TimeoutStopSec=60
 
 [Install]
 WantedBy=default.target
