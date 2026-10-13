@@ -1,0 +1,37 @@
+[project]
+name = "me-read-speech"
+version = "0.1.0"
+description = "Speech service for me-read: Breeze, Qwen voice design and Chatterbox behind one HTTP API, for a machine with an AMD GPU"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "python-multipart>=0.0.9",
+    "soundfile>=0.12",
+    "torch==2.9.1",
+    "torchaudio==2.9.1",
+    "pytorch-triton-rocm",
+    "chatterbox-tts",
+]
+
+[tool.uv]
+# Chatterbox pins torch 2.6.0, which has no build for this ROCm; 2.9.1 is the version it was measured with.
+# Gradio is only for its demo apps.
+override-dependencies = [
+    "torch==2.9.1",
+    "torchaudio==2.9.1",
+    "resemble-perth @ git+https://github.com/resemble-ai/Perth.git@ff1c8ac55a976971245cdd53c18d6131ca00d993",
+    "gradio; sys_platform == 'never'",
+]
+
+[tool.uv.sources]
+chatterbox-tts = { git = "https://github.com/resemble-ai/chatterbox", rev = "5de7a54aa4e5e2baadb0182dde554908b48b85c2" }
+torch = { index = "pytorch-rocm" }
+torchaudio = { index = "pytorch-rocm" }
+# torch needs it and only the PyTorch index has it.
+pytorch-triton-rocm = { index = "pytorch-rocm" }
+
+[[tool.uv.index]]
+name = "pytorch-rocm"
+url = "https://download.pytorch.org/whl/rocm6.4"
+explicit = true
