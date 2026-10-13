@@ -1,5 +1,6 @@
-"""Local speech: design a 15 second voice sample from a description, direct it into emotion takes, and speak text in
-a sampled voice."""
+"""Speech: design a 15 second voice sample from a description, direct it into emotion takes, and speak text in a
+sampled voice, with MLX on this Mac or on the GPU speech service."""
+import base64
 import hashlib
 import http.client
 import io
@@ -15,6 +16,7 @@ import uuid
 from dataclasses import dataclass
 from numbers import Real
 from pathlib import Path
+from typing import Callable, NamedTuple
 
 import numpy as np
 import soundfile as sf
@@ -30,6 +32,7 @@ TRANSCRIBER = 'mlx-community/whisper-large-v3-turbo-asr-fp16'
 TRANSCRIBER_REVISION = '624c19c9af5603fa73b83bce14d4aeea96156d18'
 TRANSCRIPTION_POLICY = 'whisper-auto-language-16khz-v1'
 CACHE_SIZE = 24
+CFG_SCALE = 4.0
 
 
 @dataclass(frozen=True)
@@ -38,6 +41,9 @@ class Provider:
     models: tuple[str, ...]
     languages: tuple[str, ...] | None
     reference: str
+    # The model the GPU speech service narrates with, or None when only MLX on this Mac narrates.
+    service: str | None = None
+    retakes: int = 1
 
     @property
     def identity(self):
@@ -59,11 +65,20 @@ class Provider:
 
 
 PROVIDERS = {
-    'chatterbox': Provider('chatterbox', (CHATTERBOX, MULTILINGUAL, TOKENIZER), None, 'conditionals'),
+    'chatterbox': Provider('chatterbox', (CHATTERBOX, MULTILINGUAL, TOKENIZER), None, 'conditionals', 'chatterbox', 3),
     'fish': Provider('fish', ('mlx-community/fish-audio-s2-pro-8bit',), None, 'waveform'),
     'breeze': Provider('breeze', (BREEZE,), ('en',), 'path'),
-    'breeze-gguf': Provider('breeze-gguf', ('cstr/breeze-tts-2-GGUF@q4_k',), ('en',), 'remote'),
+    'breeze-gguf': Provider('breeze-gguf', ('cstr/breeze-tts-2-GGUF@q4_k',), ('en',), 'remote', 'breeze'),
 }
+
+
+class Raw(NamedTuple):
+    """Who makes each raw piece of speech for an engine, MLX on this Mac or the GPU speech service. Each returns what
+    the model made, before the engine's trims and retries."""
+    design: Callable  # (instruction, seed, language) -> (audio, rate)
+    take: Callable  # (voice wav bytes, its transcript, instruction, script, seed) -> (audio, rate)
+    speaker: Callable  # (audio, rate, language) -> unit vector
+    line: Callable  # (text, voice path, seed, language) -> (audio, rate)
 
 
 @dataclass(frozen=True)
@@ -216,10 +231,11 @@ class Remote:
 
     def __init__(self, url, consent):
         if not url:
-            raise ValueError('--tts-url is required with --tts-provider breeze-gguf, for example http://HOST:8781')
+            raise ValueError('--tts-url is required with --tts-provider breeze-gguf and with --tts-consent, '
+                             'for example http://127.0.0.1:8781')
         if not consent or not consent.strip():
-            raise ValueError('--tts-consent is required with --tts-provider breeze-gguf. Write your own statement about '
-                             'the reference voices; there is no default.')
+            raise ValueError('--tts-consent is required with --tts-url. Write your own statement about the reference '
+                             'voices; there is no default.')
         try:
             consent.encode()
         except UnicodeEncodeError:
@@ -235,11 +251,10 @@ class Remote:
         self.host, self.base, self.consent = parts.netloc, f'{parts.scheme}://{parts.netloc}{path}', consent
         self.opener = urllib.request.build_opener(NoRedirect)
 
-    def upload(self, name, wav, transcript):
+    def upload(self, name, wav):
         boundary = uuid.uuid4().hex
         body = form(boundary, [('voice', wav, 'reference.wav'), ('name', name.encode(), None),
-                               ('consent_attestation', self.consent.encode(), None),
-                               ('transcript', transcript.encode(), None)])
+                               ('consent_attestation', self.consent.encode(), None)])
         request = urllib.request.Request(f'{self.base}/v1/voices', data=body, method='POST',
                                          headers={'Content-Type': f'multipart/form-data; boundary={boundary}'})
         try:
@@ -251,15 +266,19 @@ class Remote:
         if status != 201:
             raise RemoteError(f'The speech server at {self.host} did not confirm the voice upload (HTTP {status}).')
 
-    def speech(self, text, voice, transcript, seed):
-        body = json.dumps({'input': text, 'voice': voice, 'ref_text': transcript, 'seed': seed, 'response_format': 'wav',
-                           'consent_attestation': self.consent, 'spoken_disclaimer': False}).encode()
-        request = urllib.request.Request(f'{self.base}/v1/audio/speech', data=body, method='POST',
-                                         headers={'Content-Type': 'application/json'})
-        status, headers, wav = self._call(request, self.SPEECH_TIMEOUT)
+    def speech(self, model, text, seed, voice=None, ref_text=None, instructions=None, cfg_scale=None, language=None):
+        """WAV bytes of `text` from `model`. With a voice it is cloned or directed; without one, designed."""
+        fields = {'voice': voice, 'ref_text': ref_text, 'instructions': instructions, 'cfg_scale': cfg_scale,
+                  'language': language}
+        status, headers, wav = self._call(self._json('/v1/audio/speech', {
+            'model': model, 'input': text, **{k: v for k, v in fields.items() if v is not None}, 'seed': seed,
+            'response_format': 'wav', 'consent_attestation': self.consent, 'spoken_disclaimer': False}), self.SPEECH_TIMEOUT)
         if status != 200:
             raise RemoteError(f'The speech server at {self.host} answered HTTP {status} instead of audio.')
         state = headers.get(self.DISCLAIMER)
+        # A design is nobody's voice, so the service only reports the disclaimer state for a clone.
+        if state is None and voice is None:
+            return wav
         if state is None:
             raise RemoteError(f'The speech server at {self.host} did not say whether it left its spoken disclaimer out, '
                               'so the disclaimer state could not be confirmed.')
@@ -271,6 +290,22 @@ class Remote:
         if state != 'skipped':
             raise RemoteError(f'The speech server at {self.host} reported an unknown spoken disclaimer state.')
         return wav
+
+    def speaker(self, wav, language):
+        """Who the service's cloning model for `language` hears in the WAV bytes, as a unit vector."""
+        status, _, reply = self._call(self._json('/v1/speaker', {'audio': base64.b64encode(wav).decode(),
+                                                                 'language': language}), self.SPEECH_TIMEOUT)
+        try:
+            heard = np.asarray(json.loads(reply)['embedding'], dtype='float64') if status == 200 else None
+        except (ValueError, KeyError, TypeError):
+            heard = None
+        if heard is None or heard.ndim != 1 or not len(heard) or not np.isfinite(heard).all() or not heard.any():
+            raise RemoteError(f'The speech server at {self.host} did not answer with a speaker embedding.')
+        return heard / np.linalg.norm(heard)
+
+    def _json(self, path, payload):
+        return urllib.request.Request(f'{self.base}{path}', data=json.dumps(payload).encode(), method='POST',
+                                      headers={'Content-Type': 'application/json'})
 
     def _call(self, request, timeout):
         try:
@@ -293,6 +328,14 @@ class Remote:
                 raise Unavailable(f'The speech server at {self.host} did not answer within {timeout} seconds.') from None
             raise Unavailable(f'Could not reach the speech server at {self.host}. Check that it is running, that the '
                               'address is right, and that this machine can reach it.') from None
+
+
+def connect(provider, url, consent):
+    """The GPU speech service when an address or consent was given, which breeze-gguf cannot narrate without, else
+    None. Raises ValueError when the settings are missing or unusable."""
+    if url is None and consent is None and PROVIDERS[provider].reference != 'remote':
+        return None
+    return Remote(url, consent)
 
 
 def form(boundary, fields):
@@ -340,13 +383,19 @@ def decode_wav(data):
     return mono(audio.T, rate)
 
 
+def wav_of(audio, rate):
+    buffer = io.BytesIO()
+    sf.write(buffer, audio, rate, format='WAV', subtype='PCM_16')
+    return buffer.getvalue()
+
+
 class Engine:
-    """A selected local narrator, Breeze to design English voices and direct takes, and the Qwen3 voice designer for
-    other languages. One worker owns all model calls."""
+    """The selected narrator, Breeze to design English voices and direct takes, the Qwen3 voice designer for other
+    languages, and Chatterbox to tell voices apart. One worker owns all model calls."""
 
     def __init__(self, models_dir, tts_provider='chatterbox', tts_url=None, tts_consent=None):
         self.provider = PROVIDERS[tts_provider]
-        self.remote = Remote(tts_url, tts_consent) if self.provider.reference == 'remote' else None
+        self.remote = connect(tts_provider, tts_url, tts_consent)
         self.hub = Path(models_dir)
         self.hub.mkdir(parents=True, exist_ok=True)
         os.environ['HF_HUB_CACHE'] = str(self.hub)
@@ -354,6 +403,12 @@ class Engine:
         os.environ.setdefault('TRANSFORMERS_VERBOSITY', 'error')
         self.chatterbox = self.multilingual = self.designer = self.narrator = self.breeze = None
         self.voices, self.speakers, self.transcripts, self.uploads = {}, {}, {}, {}
+        gpu = self.remote is not None
+        self.raw = Raw(design=self._gpu_design if gpu else self._mlx_design,
+                       take=self._gpu_take if gpu else self._mlx_take,
+                       speaker=self._gpu_speaker if gpu else self._mlx_speaker,
+                       line=self._gpu_line if gpu and self.provider.service else
+                       self._mlx_line if self.provider.reference == 'conditionals' else self._mlx_reference_line)
 
     @property
     def generation_identity(self):
@@ -404,7 +459,7 @@ class Engine:
         above `ceiling` is designed again with the next seed, up to four tries, keeping the lowest.
         """
         def attempt(i):
-            audio, rate = self._designed(instruction, seed + i, language)
+            audio, rate = self.raw.design(instruction, seed + i, language)
             audio = trim(audio, rate)[:SAMPLE_SECONDS * rate]
             if len(audio) < MIN_SAMPLE_SECONDS * rate:
                 raise RuntimeError('the designed voice sample came out too short')
@@ -412,39 +467,51 @@ class Engine:
             return (audio, rate), (None if ceiling is None else median_pitch(audio, rate))
         return within_ceiling(DESIGN_TRIES, attempt, ceiling)
 
-    def _designed(self, instruction, seed, language):
+    def _mlx_design(self, instruction, seed, language):
         import mlx.core as mx
         mx.random.seed(seed)
         spoken, text = SAMPLE_TEXT.get(language, SAMPLE_TEXT['en'])
         if language == 'en':
             designer = self._breeze()
-            return self._generate(designer.generate(text=text, instruct=instruction, cfg_scale=4.0, seed=seed, stream=False),
-                                  designer.sample_rate)
+            return self._generate(designer.generate(text=text, instruct=instruction, cfg_scale=CFG_SCALE, seed=seed,
+                                                    stream=False), designer.sample_rate)
         from mlx_audio.tts.utils import load_model
         if self.designer is None:
             self.designer = load_model(self._snapshot(DESIGNER))
         return self._generate(self.designer.generate_voice_design(text=text, instruct=instruction, language=spoken),
                               self.designer.sample_rate)
 
+    def _gpu_design(self, instruction, seed, language):
+        said = language if language in SAMPLE_TEXT else 'en'
+        text = SAMPLE_TEXT[said][1]
+        if language == 'en':
+            return decode_wav(self.remote.speech('breeze', text, seed, instructions=instruction, cfg_scale=CFG_SCALE))
+        return decode_wav(self.remote.speech('qwen', text, seed, instructions=instruction, language=said))
+
     def direct(self, voice_path, emotion, seed):
         """A take of about 15 seconds of the saved voice saying the emotion's script the way the emotion asks, as
-        (audio, rate). Breeze directs it on this Mac whichever narrator reads the book."""
-        import mlx.core as mx
-        instruction, script = DIRECTIONS[emotion]
+        (audio, rate). Breeze directs it whichever narrator reads the book."""
         wav = Path(voice_path).read_bytes()
-        director = self._breeze()
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / 'reference.wav'
-            path.write_bytes(wav)
-            transcript = self._transcript(path, hashlib.sha256(wav).hexdigest())
-            mx.random.seed(seed)
-            results = director.generate(text=script, instruct=instruction, ref_audio=str(path), ref_text=transcript,
-                                        cfg_scale=4.0, seed=seed, stream=False)
-            audio, rate = self._generate(results, director.sample_rate)
+        audio, rate = self.raw.take(wav, self._transcript(wav), *DIRECTIONS[emotion], seed)
         audio = trim(audio, rate)[:SAMPLE_SECONDS * rate]
         if len(audio) < MIN_SAMPLE_SECONDS * rate:
             raise RuntimeError(f'the {emotion} take came out too short')
         return audio, rate
+
+    def _mlx_take(self, wav, transcript, instruction, script, seed):
+        import mlx.core as mx
+        director = self._breeze()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'reference.wav'
+            path.write_bytes(wav)
+            mx.random.seed(seed)
+            return self._generate(director.generate(text=script, instruct=instruction, ref_audio=str(path),
+                                                    ref_text=transcript, cfg_scale=CFG_SCALE, seed=seed, stream=False),
+                                  director.sample_rate)
+
+    def _gpu_take(self, wav, transcript, instruction, script, seed):
+        return self._cloned('breeze', wav, script, seed, ref_text=transcript, instructions=instruction,
+                            cfg_scale=CFG_SCALE)
 
     def _cloner(self, language):
         from mlx_audio.tts.utils import load_model
@@ -458,17 +525,20 @@ class Engine:
             self.multilingual = load_model(self._snapshot(MULTILINGUAL))
         return self.multilingual
 
-    def _speaker(self, model, audio, rate):
+    def _mlx_speaker(self, audio, rate, language):
         """Who the cloning model hears in the audio, as a unit vector."""
         from mlx_audio.utils import resample_audio
+        model = self._cloner(language)
         heard = np.asarray(model.ve.embeds_from_wavs([resample_audio(audio, rate, 16000)], sample_rate=16000))
         heard = heard.mean(axis=0).flatten().astype('float64')
         return heard / np.linalg.norm(heard)
 
+    def _gpu_speaker(self, audio, rate, language):
+        return self.remote.speaker(wav_of(audio, rate), language)
+
     def _apart(self, audio, rate, others, language):
         if not others:
             return audio
-        model = self._cloner(language)
         known = []
         for path in others:
             wav = Path(path).read_bytes()
@@ -476,11 +546,12 @@ class Engine:
 
             def prepare():
                 other, other_rate = sf.read(io.BytesIO(wav), dtype='float32', always_2d=True)
-                return self._speaker(model, other.mean(axis=1), other_rate)
+                return self.raw.speaker(other.mean(axis=1), other_rate, language)
             known.append(self._cached(self.speakers, key, prepare))
         # A shift up shortens the sample, and the cloning model needs a few seconds of it.
         shifts = [s for s in SHIFTS if len(audio) / 2 ** (s / 12) >= MIN_SAMPLE_SECONDS * rate]
-        shift = most_distinct(shifts, lambda s: float((np.array(known) @ self._speaker(model, shifted(audio, s), rate)).max()))
+        shift = most_distinct(shifts, lambda s: float((np.array(known) @ self.raw.speaker(shifted(audio, s), rate,
+                                                                                          language)).max()))
         return shifted(audio, shift)
 
     def _cached(self, cache, key, prepare):
@@ -504,7 +575,8 @@ class Engine:
                 return prepare(path)
         return self._cached(self.voices, (model, checksum), condition)
 
-    def _transcript(self, path, checksum):
+    def _transcript(self, wav):
+        """The words spoken in the WAV bytes, by Whisper on this Mac."""
         import mlx.core as mx
         from mlx_audio.stt import load
         from mlx_audio.stt.utils import load_audio
@@ -512,7 +584,10 @@ class Engine:
         def transcribe():
             model = None
             try:
-                audio = load_audio(str(path), sr=16000)
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / 'reference.wav'
+                    path.write_bytes(wav)
+                    audio = load_audio(str(path), sr=16000)
                 model = load(self._snapshot(TRANSCRIBER, TRANSCRIBER_REVISION))
                 text = model.generate(audio).text.strip()
                 if not text:
@@ -525,43 +600,41 @@ class Engine:
             finally:
                 del model
                 mx.clear_cache()
-        return self._cached(self.transcripts, (checksum, TRANSCRIBER, TRANSCRIBER_REVISION, TRANSCRIPTION_POLICY), transcribe)
+        key = (hashlib.sha256(wav).hexdigest(), TRANSCRIBER, TRANSCRIBER_REVISION, TRANSCRIPTION_POLICY)
+        return self._cached(self.transcripts, key, transcribe)
 
     def _reference(self, voice_path):
         from mlx_audio.tts.utils import load_model
         from mlx_audio.utils import load_audio
 
         wav = Path(voice_path).read_bytes()
-        checksum = hashlib.sha256(wav).hexdigest()
 
         def prepare():
+            text = self._transcript(wav)
+            if self.narrator is None:
+                self.narrator = load_model(self._snapshot(self.provider.models[0]))
+            if self.provider.reference != 'waveform':
+                return Reference(wav, text)
             with tempfile.TemporaryDirectory() as tmp:
                 path = Path(tmp) / 'reference.wav'
                 path.write_bytes(wav)
-                text = self._transcript(path, checksum)
-                if self.provider.reference == 'remote':
-                    return Reference(wav, text)
-                if self.narrator is None:
-                    self.narrator = load_model(self._snapshot(self.provider.models[0]))
-                waveform = load_audio(str(path), sample_rate=self.narrator.sample_rate) if self.provider.reference == 'waveform' else None
-                return Reference(wav, text, waveform)
-        return self._cached(self.voices, (self.provider.name, self.provider.models, checksum), prepare)
+                return Reference(wav, text, load_audio(str(path), sample_rate=self.narrator.sample_rate))
+        return self._cached(self.voices, (self.provider.name, self.provider.models, hashlib.sha256(wav).hexdigest()),
+                            prepare)
 
-    def _speak_reference(self, text, voice_path, seed):
+    def _mlx_reference_line(self, text, voice_path, seed, language):
         import mlx.core as mx
         reference = self._reference(voice_path)
         model = self.narrator
         mx.random.seed(seed)
         if self.provider.reference == 'waveform':
-            results = model.generate(text=text, ref_audio=reference.waveform, ref_text=reference.text, stream=False)
-            audio, rate = self._generate(results, model.sample_rate)
-        else:
-            with tempfile.TemporaryDirectory() as tmp:
-                path = Path(tmp) / 'reference.wav'
-                path.write_bytes(reference.wav)
-                results = model.generate(text=text, ref_audio=str(path), ref_text=reference.text, seed=seed, stream=False)
-                audio, rate = self._generate(results, model.sample_rate)
-        return trim(audio, rate), rate
+            return self._generate(model.generate(text=text, ref_audio=reference.waveform, ref_text=reference.text,
+                                                 stream=False), model.sample_rate)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'reference.wav'
+            path.write_bytes(reference.wav)
+            return self._generate(model.generate(text=text, ref_audio=str(path), ref_text=reference.text, seed=seed,
+                                                 stream=False), model.sample_rate)
 
     def _english(self, voice_path):
         model = self._cloner('en')
@@ -577,44 +650,47 @@ class Engine:
         conds = self._voice('multilingual', voice_path, lambda path: model.prepare_conditionals(str(path), 24000))
         return model, lambda text: model.generate(text=text, conds=conds, lang_code=language)
 
-    def _uploaded(self, name, reference):
-        def upload():
-            self.remote.upload(name, reference.wav, reference.text)
-            return True
-        self._cached(self.uploads, name, upload)
+    def _mlx_line(self, text, voice_path, seed, language):
+        import mlx.core as mx
+        model, generate = self._english(voice_path) if language == 'en' else self._other(voice_path, language)
+        mx.random.seed(seed)
+        return self._generate(generate(text), model.sample_rate)
 
-    def _speak_remote(self, text, voice_path, seed):
-        reference = self._reference(voice_path)
-        name = 'mr-' + hashlib.sha256(reference.wav).hexdigest()[:32]
+    def _gpu_line(self, text, voice_path, seed, language):
+        wav = Path(voice_path).read_bytes()
+        if self.provider.service == 'chatterbox':
+            return self._cloned('chatterbox', wav, text, seed, language=language)
+        return self._cloned('breeze', wav, text, seed, ref_text=self._transcript(wav))
+
+    def _cloned(self, model, wav, text, seed, **fields):
+        """`text` from the service's `model` in the voice of the WAV bytes, uploading the voice first when needed."""
+        name = 'mr-' + hashlib.sha256(wav).hexdigest()[:32]
         cached = name in self.uploads
-        self._uploaded(name, reference)
+        self._uploaded(name, wav)
         try:
-            wav = self.remote.speech(text, name, reference.text, seed)
+            reply = self.remote.speech(model, text, seed, voice=name, **fields)
         except RemoteError as e:
             # The server keeps uploaded voices on disk, so this retry covers a voice removed from its voice folder.
             if not cached or e.status != 500 or e.code != 'synthesis_failed':
                 raise
             self.uploads.pop(name, None)
-            self._uploaded(name, reference)
-            wav = self.remote.speech(text, name, reference.text, seed)
-        audio, rate = decode_wav(wav)
-        return trim(audio, rate), rate
+            self._uploaded(name, wav)
+            reply = self.remote.speech(model, text, seed, voice=name, **fields)
+        return decode_wav(reply)
+
+    def _uploaded(self, name, wav):
+        def upload():
+            self.remote.upload(name, wav)
+            return True
+        self._cached(self.uploads, name, upload)
 
     def speak(self, text, voice_path, seed, language='en'):
         """`text` spoken in the saved sample's voice, as mono float32 samples and their actual rate."""
         self.provider.validate_language(language)
-        if self.provider.reference == 'remote':
-            return self._speak_remote(text, voice_path, seed)
-        if self.provider.reference != 'conditionals':
-            return self._speak_reference(text, voice_path, seed)
-        import mlx.core as mx
-        model, generate = self._english(voice_path) if language == 'en' else self._other(voice_path, language)
         words = len(text.split())
-        audio = None
         # A short line sometimes rambles on past its text; a clip far longer than its words is retaken.
-        for attempt in range(3):
-            mx.random.seed(seed + attempt)
-            audio, rate = self._generate(generate(text), model.sample_rate)
+        for attempt in range(self.provider.retakes):
+            audio, rate = self.raw.line(text, voice_path, seed + attempt, language)
             audio = trim(audio, rate)
             if len(audio) / rate <= 2.5 + words * 0.9:
                 break

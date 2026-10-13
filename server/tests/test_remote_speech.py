@@ -1,3 +1,4 @@
+import base64
 import email.parser
 import email.policy
 import hashlib
@@ -15,6 +16,7 @@ import soundfile as sf
 
 from meread import pipeline as pipeline_module
 from meread import speech
+from meread.emotions import DIRECTIONS
 from test_speech import models, recording  # noqa: F401  the local stubs the remote engine must never reach
 
 CONSENT = 'I own these reference voices and allow them to be cloned for my own books.'
@@ -45,18 +47,20 @@ def fields_of(content_type, body):
 
 
 class SpeechServer:
-    """Emulates the speech server's contract as tested: named voices, consent, a transcript per voice, WAV replies."""
+    """Emulates the speech server's contract as tested: named voices, consent, a transcript per Breeze request, WAV replies."""
 
     def __init__(self):
         self.url = None
         self.consent = CONSENT
-        self.voices, self.transcripts = {}, {}
+        self.voices = {}
         self.paths, self.uploads, self.speeches = [], [], []
         self.upload_failures, self.speech_failures = [], []
         self.sample_rate, self.reply, self.broken = 24000, None, False
         self.speech_delay = 0
         self.disclaimer = 'skipped'
         self.redirect, self.upload_reply, self.speech_status = False, None, 200
+        self.replies, self.design_disclaimer = [], None
+        self.heard, self.embed, self.speaker_reply = [], lambda audio, rate: [1., 0.], None
 
     def answer(self, path, content_type, body):
         self.paths.append(path)
@@ -68,6 +72,8 @@ class SpeechServer:
             return self.upload(fields_of(content_type, body))
         if path == '/v1/audio/speech':
             return self.synthesize(json.loads(body))
+        if path == '/v1/speaker':
+            return self.speaker(json.loads(body))
         return failure(404, 'not_found', path)
 
     def upload(self, fields):
@@ -81,7 +87,7 @@ class SpeechServer:
         name = fields['name']
         if name in self.voices:
             return failure(409, 'voice_exists', 'a voice with that name already exists')
-        self.voices[name], self.transcripts[name] = fields['voice'], fields.get('transcript', '')
+        self.voices[name] = fields['voice']
         return 201, json.dumps({'format': 'wav', 'name': name}).encode(), 'application/json', {}
 
     def synthesize(self, body):
@@ -90,14 +96,31 @@ class SpeechServer:
             time.sleep(self.speech_delay)
         if self.speech_failures:
             return failure(*self.speech_failures.pop(0))
-        if body.get('consent_attestation') != self.consent:
+        voice, model = body.get('voice'), body.get('model')
+        if voice and body.get('consent_attestation') != self.consent:
             return failure(400, 'consent_required', 'consent_attestation is required')
-        voice = body.get('voice')
-        if self.broken or voice not in self.voices or not self.transcripts.get(voice):
-            return failure(500, 'synthesis_failed', 'the voice is unknown or has no transcript')
-        reply = self.reply if self.reply is not None else wav_bytes(self.sample_rate)
+        if (model not in ('breeze', 'qwen', 'chatterbox') or (model == 'chatterbox' and not voice)
+                or (model == 'qwen' and (voice or not body.get('instructions')))):
+            return failure(400, 'invalid_request', f'{model} cannot take these fields')
+        if voice is None:
+            headers = {} if self.design_disclaimer is None else {'X-Crispasr-Spoken-Disclaimer': self.design_disclaimer}
+            return 200, wav_bytes(self.sample_rate, seconds=20), 'audio/wav', headers
+        if model == 'breeze' and not body.get('ref_text'):
+            return failure(400, 'ref_text_required', 'a Breeze clone needs the transcript of its voice')
+        if self.broken or voice not in self.voices:
+            return failure(500, 'synthesis_failed', 'the voice is unknown')
+        # A take is a 15 second direction of the voice; a line is short.
+        default = wav_bytes(self.sample_rate, seconds=20 if body.get('instructions') else 0.5)
+        reply = self.replies.pop(0) if self.replies else self.reply if self.reply is not None else default
         headers = {} if self.disclaimer is None else {'X-Crispasr-Spoken-Disclaimer': self.disclaimer}
         return self.speech_status, reply, 'audio/wav', headers
+
+    def speaker(self, body):
+        audio, rate = sf.read(io.BytesIO(base64.b64decode(body['audio'])), dtype='float32')
+        self.heard.append({'seconds': len(audio) / rate, 'level': float(audio.mean()), 'language': body['language']})
+        if self.speaker_reply:
+            return self.speaker_reply
+        return 200, json.dumps({'embedding': self.embed(audio, rate)}).encode(), 'application/json', {}
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -184,11 +207,10 @@ def test_speech_request_carries_transcript_consent_seed_and_disclaimer_off(tmp_p
     engine = remote_engine(tmp_path, speech_server)
     engine.speak('Hello there.', voice, 77)
     assert speech_server.speeches == [{
-        'input': 'Hello there.', 'voice': name_for(voice.read_bytes()), 'ref_text': 'The saved words.', 'seed': 77,
+        'model': 'breeze', 'input': 'Hello there.', 'voice': name_for(voice.read_bytes()), 'ref_text': 'The saved words.', 'seed': 77,
         'response_format': 'wav', 'consent_attestation': CONSENT, 'spoken_disclaimer': False}]
-    upload = speech_server.uploads[0]
-    assert (upload['transcript'], upload['consent_attestation'], upload['name']) == (
-        'The saved words.', CONSENT, name_for(voice.read_bytes()))
+    assert speech_server.uploads == [{'voice': voice.read_bytes(), 'name': name_for(voice.read_bytes()),
+                                      'consent_attestation': CONSENT}]
     assert float(models.transcribed[0].mean()) == pytest.approx(0.1, abs=0.0001)
 
 
@@ -571,3 +593,186 @@ def test_a_speech_reply_over_the_size_limit_is_refused(tmp_path, models, speech_
     monkeypatch.setattr(speech.Remote, 'REPLY_LIMIT', 1000)
     with pytest.raises(RuntimeError, match='larger than 1000 bytes'):
         remote_engine(tmp_path, speech_server).speak('Hello.', voice, 42)
+
+
+def gpu_engine(tmp_path, server, provider='chatterbox'):
+    return speech.Engine(tmp_path / 'hub', provider, tts_url=server.url, tts_consent=CONSENT)
+
+
+def asked(**fields):
+    return {**fields, 'response_format': 'wav', 'consent_attestation': CONSENT, 'spoken_disclaimer': False}
+
+
+@pytest.mark.parametrize('provider', list(speech.PROVIDERS))
+def test_english_voices_are_designed_by_breeze_on_the_service_with_no_model_on_this_mac(tmp_path, models, speech_server, provider):
+    audio, rate = gpu_engine(tmp_path, speech_server, provider).design('A low voice.', 42)
+    assert speech_server.speeches == [asked(model='breeze', input=speech.SAMPLE_TEXT['en'][1], instructions='A low voice.',
+                                            cfg_scale=4.0, seed=42)]
+    assert speech_server.paths == ['/v1/audio/speech'] and speech_server.uploads == []
+    assert rate == 24000 and len(audio) == speech.SAMPLE_SECONDS * rate
+    assert models.loads == models.snapshots == models.transcribed == []
+
+
+@pytest.mark.parametrize('language, said', [('es', 'es'), ('fr', 'en')])
+def test_other_languages_are_designed_by_qwen_on_the_service_in_the_language_of_the_sample(tmp_path, models, speech_server,
+                                                                                           language, said):
+    gpu_engine(tmp_path, speech_server).design('Una voz grave.', 7, language=language)
+    assert speech_server.speeches == [asked(model='qwen', input=speech.SAMPLE_TEXT[said][1], instructions='Una voz grave.',
+                                            language=said, seed=7)]
+    assert models.loads == []
+
+
+def test_a_male_voice_above_its_ceiling_is_designed_again_on_the_service_with_the_next_seed(tmp_path, models, speech_server,
+                                                                                            monkeypatch):
+    pitches = iter([300., 240., 190.])
+    monkeypatch.setattr(speech, 'median_pitch', lambda audio, rate: next(pitches))
+    gpu_engine(tmp_path, speech_server).design('A young man.', 42, ceiling=210)
+    assert [call['seed'] for call in speech_server.speeches] == [42, 43, 44]
+
+
+@pytest.mark.parametrize('state', ['applied', 'unknown'])
+def test_a_design_whose_reply_reports_a_disclaimer_other_than_skipped_is_refused(tmp_path, models, speech_server, state):
+    speech_server.design_disclaimer = state
+    with pytest.raises(speech.RemoteError, match='disclaimer'):
+        gpu_engine(tmp_path, speech_server).design('A low voice.', 42)
+
+
+def test_a_take_is_directed_by_breeze_on_the_service_from_the_uploaded_voice_and_its_mac_transcript(tmp_path, models,
+                                                                                                    speech_server):
+    voice = recording(tmp_path / 'voice.wav', rate=44100)
+    models.transcript = 'The saved words.'
+    engine = gpu_engine(tmp_path, speech_server)
+    audio, rate = engine.direct(voice, 'angry', 9)
+    instruction, script = DIRECTIONS['angry']
+    wav = voice.read_bytes()
+    assert speech_server.uploads == [{'voice': wav, 'name': name_for(wav), 'consent_attestation': CONSENT}]
+    assert speech_server.speeches == [asked(model='breeze', input=script, voice=name_for(wav), ref_text='The saved words.',
+                                            instructions=instruction, cfg_scale=4.0, seed=9)]
+    assert rate == 24000 and len(audio) == speech.SAMPLE_SECONDS * rate
+    assert models.loads == [speech.TRANSCRIBER]
+    engine.direct(voice, 'sad', 9)
+    assert len(speech_server.uploads) == 1 and len(models.transcribed) == 1
+
+
+def test_a_sample_that_sounds_like_a_voice_in_use_is_shifted_by_the_service_speaker_comparison(tmp_path, models, speech_server):
+    other = recording(tmp_path / 'other.wav', level=0.3)
+    # Only the unshifted 15 second sample passes for the other voice; any shift tells them apart.
+    speech_server.embed = lambda audio, rate: [1., 0.] if len(audio) in (7 * rate, 15 * rate) else [0., 1.]
+    engine = gpu_engine(tmp_path, speech_server)
+    audio, rate = engine.design('A low voice.', 42, language='es', others=[other])
+    assert len(audio) > speech.SAMPLE_SECONDS * rate, 'shifted down, so played slower'
+    assert [heard['language'] for heard in speech_server.heard] == ['es'] * 3
+    assert speech_server.heard[0] == {'seconds': 7, 'level': pytest.approx(0.3, abs=0.001), 'language': 'es'}
+    engine.design('A low voice.', 43, language='es', others=[other])
+    assert len(speech_server.heard) == 5, 'the voice in use is heard once'
+    assert models.loads == []
+
+
+@pytest.mark.parametrize('reply', [
+    (200, b'{"embedding": []}', 'application/json', {}),
+    (200, b'{"embedding": [0, 0]}', 'application/json', {}),
+    (200, b'{"embedding": [[1, 0]]}', 'application/json', {}),
+    (200, b'{"embedding": ["a"]}', 'application/json', {}),
+    (200, b'{"vector": [1, 0]}', 'application/json', {}),
+    (200, b'not json', 'text/plain', {}),
+    (202, b'{"embedding": [1, 0]}', 'application/json', {}),
+])
+def test_a_speaker_answer_that_is_not_a_usable_embedding_is_an_error(tmp_path, models, speech_server, reply):
+    speech_server.speaker_reply = reply
+    with pytest.raises(speech.RemoteError, match='speaker embedding') as failed:
+        gpu_engine(tmp_path, speech_server).design('A low voice.', 42, others=[recording(tmp_path / 'other.wav')])
+    assert not isinstance(failed.value, speech.Unavailable)
+
+
+def test_a_speaker_comparison_while_the_service_loads_is_unavailable(tmp_path, models, speech_server):
+    speech_server.speaker_reply = failure(503, 'loading', 'chatterbox is loading')
+    with pytest.raises(speech.Unavailable, match='HTTP 503 loading'):
+        gpu_engine(tmp_path, speech_server).design('A low voice.', 42, others=[recording(tmp_path / 'other.wav')])
+
+
+def test_the_speaker_embedding_comes_back_as_a_unit_vector(speech_server):
+    speech_server.embed = lambda audio, rate: [3., 4.]
+    heard = speech.Remote(speech_server.url, CONSENT).speaker(wav_bytes(), 'en')
+    np.testing.assert_allclose(heard, [0.6, 0.8])
+
+
+@pytest.mark.parametrize('language', ['en', 'es'])
+def test_chatterbox_narrates_on_the_service_and_a_rambling_line_is_retaken_with_the_next_seed(tmp_path, models, speech_server,
+                                                                                             language):
+    voice = recording(tmp_path / 'voice.wav')
+    speech_server.replies = [wav_bytes(seconds=9), wav_bytes(seconds=0.5)]
+    audio, rate = gpu_engine(tmp_path, speech_server).speak('Hello.', voice, 42, language=language)
+    name = name_for(voice.read_bytes())
+    assert speech_server.speeches == [asked(model='chatterbox', input='Hello.', voice=name, language=language, seed=seed)
+                                      for seed in (42, 43)]
+    assert len(speech_server.uploads) == 1 and len(audio) == rate // 2
+    assert models.loads == [], 'no speech model on this Mac, not even Whisper'
+
+
+def test_a_line_that_keeps_rambling_is_kept_after_three_tries(tmp_path, models, speech_server):
+    speech_server.replies = [wav_bytes(seconds=9)] * 4
+    audio, rate = gpu_engine(tmp_path, speech_server).speak('Hello.', recording(tmp_path / 'voice.wav'), 42)
+    assert [call['seed'] for call in speech_server.speeches] == [42, 43, 44] and len(audio) == 9 * rate
+
+
+@pytest.mark.parametrize('provider', ['fish', 'breeze'])
+def test_fish_and_breeze_still_narrate_on_this_mac_when_the_service_designs(tmp_path, models, speech_server, provider):
+    voice = recording(tmp_path / 'voice.wav')
+    engine = gpu_engine(tmp_path, speech_server, provider)
+    engine.design('A low voice.', 42)
+    engine.speak('Hello.', voice, 42)
+    assert [call['model'] for call in speech_server.speeches] == ['breeze']
+    assert models.loads == [speech.TRANSCRIBER, speech.PROVIDERS[provider].models[0]]
+
+
+def test_with_the_service_chatterbox_designs_directs_compares_and_narrates_without_an_mlx_speech_model(tmp_path, models,
+                                                                                                     speech_server):
+    engine = gpu_engine(tmp_path, speech_server)
+    first, second = tmp_path / 'first.wav', tmp_path / 'second.wav'
+    sf.write(first, *engine.design('A low voice.', 1), format='WAV')
+    sf.write(second, *engine.design('A high voice.', 2, others=[first]), format='WAV')
+    take = tmp_path / 'take.wav'
+    speech_server.replies = [wav_bytes(seconds=20, level=0.3)]
+    sf.write(take, *engine.direct(second, 'happy', 3), format='WAV')
+    engine.speak('Hello.', take, 4)
+    assert [call['model'] for call in speech_server.speeches] == ['breeze', 'breeze', 'breeze', 'chatterbox']
+    assert models.loads == [speech.TRANSCRIBER], 'Whisper once, for the take'
+    assert {repo for repo, _ in models.snapshots} == {speech.TRANSCRIBER}
+    assert engine.chatterbox is engine.multilingual is engine.designer is engine.breeze is engine.narrator is None
+
+
+PINNED_IDENTITY = {
+    'chatterbox': {'provider': 'chatterbox', 'policy': 1, 'models': [
+        {'id': 'mlx-community/chatterbox-turbo-8bit'}, {'id': 'mlx-community/chatterbox-8bit'},
+        {'id': 'mlx-community/S3TokenizerV2'}, {'id': 'mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit'}]},
+    'fish': {'provider': 'fish', 'policy': 1, 'transcription_policy': 'whisper-auto-language-16khz-v1', 'models': [
+        {'id': 'mlx-community/fish-audio-s2-pro-8bit'}, {'id': 'mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit'},
+        {'id': 'mlx-community/whisper-large-v3-turbo-asr-fp16', 'revision': '624c19c9af5603fa73b83bce14d4aeea96156d18'}]},
+    'breeze': {'provider': 'breeze', 'policy': 1, 'transcription_policy': 'whisper-auto-language-16khz-v1', 'models': [
+        {'id': 'mlx-community/Breeze-TTS-2-mlx-4bit'}, {'id': 'mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit'},
+        {'id': 'mlx-community/whisper-large-v3-turbo-asr-fp16', 'revision': '624c19c9af5603fa73b83bce14d4aeea96156d18'}]},
+    'breeze-gguf': {'provider': 'breeze-gguf', 'policy': 1, 'transcription_policy': 'whisper-auto-language-16khz-v1',
+                    'spoken_disclaimer': False, 'models': [
+        {'id': 'cstr/breeze-tts-2-GGUF@q4_k'}, {'id': 'mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit'},
+        {'id': 'mlx-community/whisper-large-v3-turbo-asr-fp16', 'revision': '624c19c9af5603fa73b83bce14d4aeea96156d18'}]},
+}
+
+
+@pytest.mark.parametrize('provider', list(speech.PROVIDERS))
+def test_generation_identity_is_pinned_and_does_not_depend_on_where_the_models_run(tmp_path, provider):
+    with_service = speech.Engine(tmp_path / 'hub', provider, tts_url='http://127.0.0.1:9', tts_consent=CONSENT)
+    assert with_service.generation_identity == PINNED_IDENTITY[provider]
+    if provider != 'breeze-gguf':
+        assert speech.Engine(tmp_path / 'hub', provider).generation_identity == PINNED_IDENTITY[provider]
+
+
+def test_moving_chatterbox_to_the_service_keeps_every_ready_clip(world, tmp_path):
+    from meread.app import create_app
+
+    world.pipeline.set_focus(world.book['id'], 0, 1, 0, 1)
+    world.drain()
+    before = world.store.all('SELECT id, audio_state, audio_rev, duration FROM segment')
+    assert [clip for clip in before if clip['audio_state'] == 'ready']
+    engine = speech.Engine(tmp_path / 'hub', 'chatterbox', tts_url='http://127.0.0.1:9', tts_consent=CONSENT)
+    moved = create_app(tmp_path, engine=engine, run_workers=False)
+    assert moved.state.store.all('SELECT id, audio_state, audio_rev, duration FROM segment') == before

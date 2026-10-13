@@ -14,19 +14,18 @@ def main():
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--home', default=HOME, help='where books, voices, audio and models are kept')
     parser.add_argument('--tts-provider', choices=speech.PROVIDERS, default='chatterbox',
-                        help='local narrator, separate from the tagger setting (default: chatterbox; breeze is English-only; '
-                             'breeze-gguf is English-only and narrates through the speech server at --tts-url)')
-    parser.add_argument('--tts-url', help='address of the speech server for breeze-gguf, for example http://HOST:8781')
+                        help='narrator, separate from the tagger setting (default: chatterbox; breeze is English-only; '
+                             'breeze-gguf is English-only and narrates only through the GPU speech service at --tts-url)')
+    parser.add_argument('--tts-url', help='address of the GPU speech service, for example http://127.0.0.1:8781. With it, '
+                                          'the service designs voices, makes emotion takes and compares speakers, and '
+                                          'narrates for chatterbox and breeze-gguf; fish and breeze still narrate here')
     parser.add_argument('--tts-consent', help='your own statement that you may use the reference voices; required with '
-                                              'breeze-gguf, sent with every request, and has no default')
+                                              '--tts-url, sent with every request, and has no default')
     args = parser.parse_args()
-    if args.tts_provider == 'breeze-gguf':
-        try:
-            speech.Remote(args.tts_url, args.tts_consent)
-        except ValueError as e:
-            parser.error(str(e))
-    elif args.tts_url is not None or args.tts_consent is not None:
-        parser.error('--tts-url and --tts-consent apply only to --tts-provider breeze-gguf')
+    try:
+        speech.connect(args.tts_provider, args.tts_url, args.tts_consent)
+    except ValueError as e:
+        parser.error(str(e))
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(name)s %(message)s')
     web = Path(__file__).resolve().parents[2] / 'web/dist'
     app = create_app(args.home, web_dir=web, tts_provider=args.tts_provider, tts_url=args.tts_url, tts_consent=args.tts_consent)

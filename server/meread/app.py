@@ -140,10 +140,12 @@ def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers
     changed = store.reconcile_generation(identity, speech.PROVIDERS['chatterbox'].identity)
     selected = speech.PROVIDERS[identity['provider']]
     remote = getattr(engine, 'remote', None)
-    logging.getLogger('meread').info('Narrator %s%s, models %s, languages %s; shared voice designer %s%s',
-                                   selected.name, f' on {remote.host}' if remote else '', ', '.join(selected.models),
-                                   ', '.join(selected.languages or ('any language the model accepts',)), speech.DESIGNER,
-                                   '; cached narration invalidated' if changed else '')
+    service = f'the speech service at {remote.host}' if remote else None
+    logging.getLogger('meread').info(
+        'Narrator %s on %s, languages %s; voice design, emotion takes and speaker comparison on %s%s', selected.name,
+        service if service and selected.service else f"this Mac with {', '.join(selected.models)}",
+        ', '.join(selected.languages or ('any language the model accepts',)), service or 'this Mac',
+        '; cached narration invalidated' if changed else '')
     pipeline = Pipeline(store, engine, publish=hub.publish, **({'ask': ask} if ask else {}), **({'draw': draw} if draw else {}))
 
     @asynccontextmanager
