@@ -352,11 +352,16 @@ class Store:
             self.invalidate_audio('id = ?', (segment_id,))
             return self.segment(segment_id)
 
-    def retag_block(self, block_id):
+    def retag_blocks(self, where, args=()):
+        """Clear the speakers of matching paragraphs and send them back to the tagger. Returns their ids."""
         with self.lock:
-            self.run("UPDATE segment SET character_id = NULL WHERE block_id = ? AND kind = 'speech'", (block_id,))
-            self.invalidate_audio("block_id = ? AND kind = 'speech'", (block_id,))
-            self.run("UPDATE block SET tag_state = 'pending' WHERE id = ?", (block_id,))
+            ids = [row['id'] for row in self.all(f'SELECT id FROM block WHERE {where}', args)]
+            if ids:
+                marks = ','.join('?' * len(ids))
+                self.run(f"UPDATE segment SET character_id = NULL WHERE block_id IN ({marks}) AND kind = 'speech'", ids)
+                self.invalidate_audio(f"block_id IN ({marks}) AND kind = 'speech'", ids)
+                self.run(f"UPDATE block SET tag_state = 'pending' WHERE id IN ({marks})", ids)
+            return ids
 
     # Moments
 

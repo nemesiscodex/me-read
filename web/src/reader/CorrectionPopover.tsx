@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import { api, type Block, type Character, type CharacterInput, type Moment, type Segment } from '../api'
 import { EMPTY_CHARACTER, sortCast } from '../lib/cast'
+import type { BlockRange } from '../lib/pages'
 import { hueStyle } from './BlockView'
 import { CharacterFields } from './CharacterFields'
 
@@ -10,6 +11,8 @@ interface Props {
   block: Block
   characters: Character[]
   at: { x: number; y: number }
+  /** Paragraphs on the page being read and the one after it; null when there is no such page. */
+  pages: { current: BlockRange | null; next: BlockRange | null }
   /** Illustrations are on and the paragraph has no starred picture yet. */
   canStar: boolean
   onClose: () => void
@@ -25,7 +28,7 @@ function excerpt(text: string): string {
   return flat.length > 90 ? `${flat.slice(0, 88).trimEnd()}…` : flat
 }
 
-export function CorrectionPopover({ bookId, segment, block, characters, at, canStar, onClose, onSegment, onCharacter, onMoment }: Props) {
+export function CorrectionPopover({ bookId, segment, block, characters, at, pages, canStar, onClose, onSegment, onCharacter, onMoment }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const [position, setPosition] = useState(at)
   const [draft, setDraft] = useState<CharacterInput | null>(null)
@@ -100,6 +103,14 @@ export function CorrectionPopover({ bookId, segment, block, characters, at, canS
       return 'Asked the tagger to look at this paragraph again.'
     })
 
+  const { current: currentPage, next: nextPage } = pages
+  const retagPage = (range: BlockRange) =>
+    attempt(async () => {
+      const { retagged } = await api.retagBlocks(bookId, range)
+      if (retagged === 0) return 'Nobody speaks on that page.'
+      return `Asked the tagger to look at ${retagged} ${retagged === 1 ? 'paragraph' : 'paragraphs'} again.`
+    })
+
   const star = () => {
     setStarring(true)
     return attempt(async () => {
@@ -163,6 +174,16 @@ export function CorrectionPopover({ bookId, segment, block, characters, at, canS
             <button className="menu-button" onClick={() => void retag()} disabled={busy}>
               Tag this paragraph again
             </button>
+            {currentPage && (
+              <button className="menu-button" onClick={() => void retagPage(currentPage)} disabled={busy}>
+                Tag this page again
+              </button>
+            )}
+            {nextPage && (
+              <button className="menu-button" onClick={() => void retagPage(nextPage)} disabled={busy}>
+                Tag the next page again
+              </button>
+            )}
             {canStar && (
               <>
                 <button className="menu-button" onClick={() => void star()} disabled={busy} aria-busy={starring}>
