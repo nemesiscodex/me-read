@@ -1,6 +1,7 @@
 """HTTP API and event stream for the reader."""
 import asyncio
 import json
+import logging
 import re
 import shutil
 import tempfile
@@ -121,10 +122,20 @@ class Hub:
             self.listeners[book_id].discard(queue)
 
 
-def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers=True):
+def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers=True, tts_provider='chatterbox',
+               tts_url=None, tts_consent=None):
+    provider = speech.PROVIDERS[tts_provider]
     store = Store(home)
     hub = Hub()
-    engine = engine or speech.Engine(Path(home) / 'models/hub')
+    engine = engine or speech.Engine(Path(home) / 'models/hub', tts_provider=tts_provider, tts_url=tts_url, tts_consent=tts_consent)
+    identity = getattr(engine, 'generation_identity', provider.identity)
+    changed = store.reconcile_generation(identity, speech.PROVIDERS['chatterbox'].identity)
+    selected = speech.PROVIDERS[identity['provider']]
+    remote = getattr(engine, 'remote', None)
+    logging.getLogger('meread').info('Narrator %s%s, models %s, languages %s; shared voice designer %s%s',
+                                   selected.name, f' on {remote.host}' if remote else '', ', '.join(selected.models),
+                                   ', '.join(selected.languages or ('any language the model accepts',)), speech.DESIGNER,
+                                   '; cached narration invalidated' if changed else '')
     pipeline = Pipeline(store, engine, publish=hub.publish, **({'ask': ask} if ask else {}), **({'draw': draw} if draw else {}))
 
     @asynccontextmanager

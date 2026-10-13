@@ -2,6 +2,7 @@ import asyncio
 import re
 
 import numpy as np
+import pytest
 
 from meread import speech
 from meread.app import Hub
@@ -336,3 +337,144 @@ def test_closing_the_hub_ends_open_event_streams_and_refuses_new_ones():
         return first, rest, late
     first, rest, late = asyncio.run(asyncio.wait_for(scenario(), 5))
     assert first.startswith('data: ') and rest == [] and late == []
+
+
+@pytest.mark.parametrize('provider', ['fish', 'breeze'])
+def test_provider_switch_preserves_cast_candidates_tags_and_exact_position(world, tmp_path, provider):
+    from fastapi.testclient import TestClient
+    from meread.app import create_app
+
+    world.ask.answer = answer
+    focus(world)
+    world.drain()
+    narrator = world.store.narrator(world.book['id'])
+    world.client.post(f"/api/characters/{narrator['id']}/voice/draft")
+    world.drain()
+    world.store.run('UPDATE book SET position_block = 3, position_seq = 1 WHERE id = ?', (world.book['id'],))
+    cast = world.store.characters(world.book['id'])
+    samples = {path: path.read_bytes() for c in cast for path in (world.store.voice_path(c), world.store.draft_path(c))
+               if path.exists()}
+    tags = world.store.all('SELECT id, tag_state FROM block')
+    clips = world.store.all('SELECT id, audio_rev FROM segment')
+    calls, designs = len(world.ask.prompts), len(world.engine.designed)
+
+    reopened = create_app(tmp_path, engine=world.engine, ask=world.ask, tts_provider=provider, run_workers=False)
+    with TestClient(reopened) as client:
+        store = reopened.state.store
+        assert store.characters(world.book['id']) == cast
+        assert store.all('SELECT id, tag_state FROM block') == tags
+        assert {path: path.read_bytes() for path in samples} == samples
+        assert store.book(world.book['id'])['position_block'] == 3
+        assert store.book(world.book['id'])['position_seq'] == 1
+        for clip in clips:
+            after = store.segment(clip['id'])
+            assert (after['audio_state'], after['audio_rev'], after['duration'], after['error']) == (
+                'none', clip['audio_rev'] + 1, None, None)
+            assert client.get(f"/api/segments/{clip['id']}/audio").status_code == 404
+        reopened.state.pipeline.set_focus(world.book['id'], 0, 5, 3, 5, (3, 1))
+        while reopened.state.pipeline.tag_step() or reopened.state.pipeline.speech_step():
+            pass
+        assert all(s['audio_state'] == 'ready' for b in store.chapter_blocks(world.book['id'], 0) for s in b['segments'])
+    assert (len(world.ask.prompts), len(world.engine.designed)) == (calls, designs)
+
+    again = create_app(tmp_path, engine=world.engine, tts_provider=provider, run_workers=False)
+    assert again.state.store.all('SELECT id, audio_state, audio_rev, duration FROM segment') == (
+        reopened.state.store.all('SELECT id, audio_state, audio_rev, duration FROM segment'))
+    returned = create_app(tmp_path, engine=world.engine, run_workers=False)
+    assert all(s['audio_state'] == 'none' and s['audio_rev'] == clip['audio_rev'] + 2
+               for clip in clips for s in [returned.state.store.segment(clip['id'])])
+    assert {path: path.read_bytes() for path in samples} == samples
+
+
+@pytest.mark.parametrize('provider, bump', [('chatterbox', 0), ('fish', 1)])
+def test_legacy_library_without_identity_is_chatterbox(world, tmp_path, provider, bump):
+    from meread.app import create_app
+
+    focus(world, 0, 0, 0, 0)
+    world.drain()
+    clip = world.chapter()[0]['segments'][0]
+    world.store.run('DELETE FROM generation_identity')
+    reopened = create_app(tmp_path, engine=world.engine, tts_provider=provider, run_workers=False)
+    after = reopened.state.store.segment(clip['id'])
+    assert after['audio_rev'] == clip['audio_rev'] + bump
+    assert after['audio_state'] == ('none' if bump else 'ready')
+    assert reopened.state.store.one('SELECT COUNT(*) AS count FROM generation_identity')['count'] == 1
+
+
+def test_identity_change_and_audio_invalidation_roll_back_together(world, monkeypatch):
+    focus(world, 0, 0, 0, 0)
+    world.drain()
+    clip = world.chapter()[0]['segments'][0]
+    before = world.store.one('SELECT identity FROM generation_identity')
+    invalidate = world.store.invalidate_audio
+
+    def failed(where, args=()):
+        invalidate(where, args)
+        raise RuntimeError('interrupted migration')
+    monkeypatch.setattr(world.store, 'invalidate_audio', failed)
+    with pytest.raises(RuntimeError, match='interrupted migration'):
+        world.store.reconcile_generation(speech.PROVIDERS['fish'].identity, speech.PROVIDERS['chatterbox'].identity)
+    assert world.store.segment(clip['id']) == clip
+    assert world.store.one('SELECT identity FROM generation_identity') == before
+    assert not world.store.db.in_transaction
+
+
+@pytest.mark.parametrize('change', ['policy', 'checkpoint'])
+def test_policy_or_checkpoint_change_invalidates_ready_and_failed_audio(world, change):
+    import copy
+
+    focus(world, 0, 0, 0, 0)
+    world.drain()
+    clips = world.store.all('SELECT id, audio_rev FROM segment')
+    failed = clips[-1]['id']
+    world.store.run("UPDATE segment SET audio_state = 'failed', duration = 12, error = 'old failure' WHERE id = ?", (failed,))
+    identity = copy.deepcopy(speech.PROVIDERS['chatterbox'].identity)
+    if change == 'policy':
+        identity['policy'] += 1
+    else:
+        identity['models'][0]['revision'] = 'new-fixed-checkpoint'
+    assert world.store.reconcile_generation(identity, speech.PROVIDERS['chatterbox'].identity)
+    for clip in clips:
+        after = world.store.segment(clip['id'])
+        assert (after['audio_state'], after['audio_rev'], after['duration'], after['error']) == (
+            'none', clip['audio_rev'] + 1, None, None)
+    assert not world.store.reconcile_generation(identity, speech.PROVIDERS['chatterbox'].identity)
+
+
+def test_switching_to_breeze_gguf_and_back_resets_narration_and_keeps_everything_else(world):
+    book_id = world.book['id']
+    world.ask.answer = {'new_characters': [], 'lines': []}
+    focus(world, 0, 2, 1, 2)
+    world.drain()
+    narrator = world.store.narrator(book_id)
+    assert world.client.post(f"/api/characters/{narrator['id']}/voice/draft").status_code == 200
+    world.drain()
+    before = {'cast': world.store.characters(book_id), 'tags': world.store.all('SELECT id, tag_state FROM block ORDER BY id'),
+              'book': world.store.book(book_id), 'draft': world.store.draft_path(narrator).read_bytes()}
+    assert before['book']['position_block'] == 1 and world.store.all('SELECT id FROM segment WHERE audio_state = ?', ('ready',))
+    assert speech.PROVIDERS['breeze-gguf'].identity == {
+        'provider': 'breeze-gguf', 'policy': 1, 'transcription_policy': speech.TRANSCRIPTION_POLICY, 'spoken_disclaimer': False,
+        'models': [{'id': 'cstr/breeze-tts-2-GGUF@q4_k'}, {'id': speech.DESIGNER},
+                   {'id': speech.TRANSCRIBER, 'revision': speech.TRANSCRIBER_REVISION}]}
+    assert world.store.reconcile_generation(speech.PROVIDERS['breeze-gguf'].identity, speech.PROVIDERS['chatterbox'].identity)
+    assert world.store.all('SELECT id FROM segment WHERE audio_state != ?', ('none',)) == []
+    assert world.store.all('SELECT id, tag_state FROM block ORDER BY id') == before['tags']
+    assert world.store.characters(book_id) == before['cast']
+    assert world.store.book(book_id) == before['book']
+    assert world.store.draft_path(narrator).read_bytes() == before['draft']
+    assert not world.store.reconcile_generation(speech.PROVIDERS['breeze-gguf'].identity, speech.PROVIDERS['chatterbox'].identity)
+    assert world.store.reconcile_generation(speech.PROVIDERS['chatterbox'].identity, speech.PROVIDERS['breeze-gguf'].identity)
+    assert world.store.all('SELECT id FROM segment WHERE audio_state != ?', ('none',)) == []
+    assert world.store.characters(book_id) == before['cast']
+
+
+def test_provider_change_discards_a_clip_that_was_already_generating(world):
+    focus(world, 0, 0, 0, 0)
+    title = world.chapter()[0]['segments'][0]
+    world.pipeline.speech_step()
+    world.engine.during_speak = lambda: world.store.reconcile_generation(
+        speech.PROVIDERS['fish'].identity, speech.PROVIDERS['chatterbox'].identity)
+    world.pipeline.speech_step()
+    after = world.store.segment(title['id'])
+    assert (after['audio_state'], after['audio_rev']) == ('none', title['audio_rev'] + 1)
+    assert not world.store.audio_path(world.book['id'], title['id']).exists()

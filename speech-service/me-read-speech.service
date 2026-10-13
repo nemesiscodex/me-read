@@ -1,0 +1,23 @@
+[Unit]
+Description=me-read speech server (CrispASR, Breeze TTS 2)
+After=network-online.target
+# The image service and this one cannot share a 16 GB card. Starting either stops the other.
+Conflicts=me-read-imager.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/me-read-speech
+Environment=HOST=127.0.0.1
+Environment=PORT=8781
+Environment=BIN=%h/me-read-speech/build/bin/crispasr
+Environment=MODEL=%h/me-read-speech/models/breeze-tts-2-q4_k.gguf
+Environment=VOICE_DIR=%h/me-read-speech/voices
+Environment=ROCM_ROOT=%h/me-read-speech
+ExecStart=%h/me-read-speech/run-speech-service.sh
+Restart=on-failure
+RestartSec=10
+KillMode=control-group
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

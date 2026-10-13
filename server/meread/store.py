@@ -7,6 +7,8 @@ from pathlib import Path
 from . import epub, segment
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS generation_identity (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1), identity TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS book (
   id INTEGER PRIMARY KEY, title TEXT NOT NULL, author TEXT NOT NULL, block_count INTEGER NOT NULL,
   position_block INTEGER NOT NULL DEFAULT 0, position_seq INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -130,6 +132,25 @@ class Store:
     def one(self, sql, args=()):
         rows = self.all(sql, args)
         return rows[0] if rows else None
+
+    def reconcile_generation(self, identity, legacy_identity):
+        """Select the library's narrator before workers start, invalidating only clips when its identity changes."""
+        encoded = json.dumps(identity, sort_keys=True, separators=(',', ':'))
+        legacy = json.dumps(legacy_identity, sort_keys=True, separators=(',', ':'))
+        with self.lock:
+            self.db.execute('BEGIN IMMEDIATE')
+            try:
+                saved = self.one('SELECT identity FROM generation_identity WHERE singleton = 1')
+                changed = (saved['identity'] if saved else legacy) != encoded
+                if changed:
+                    self.invalidate_audio('1')
+                self.db.execute('INSERT INTO generation_identity (singleton, identity) VALUES (1, ?) '
+                                'ON CONFLICT (singleton) DO UPDATE SET identity = excluded.identity', (encoded,))
+                self.db.execute('COMMIT')
+                return changed
+            except Exception:
+                self.db.execute('ROLLBACK')
+                raise
 
     # Files
 
