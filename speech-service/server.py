@@ -501,6 +501,9 @@ def main():
     # MIOpen otherwise searches for kernels for every new sentence length, which made Chatterbox about three times
     # slower on lines it had not seen (Turbo 0.96 against 0.28 seconds of work per second of audio).
     os.environ.setdefault('MIOPEN_FIND_MODE', 'FAST')
+    # Each GPU process otherwise opens four hardware queues, and with the CrispASR children loaded the card ran out and
+    # shared them in turns: Turbo went from 0.26 to 0.74 seconds of work per second of audio. Children inherit this.
+    os.environ.setdefault('GPU_MAX_HW_QUEUES', '1')
     loader = Loader(engines(args), args.budget_gb, args.load_wait)
     uvicorn.run(create_app(loader, Voices(args.voices)), host=args.host, port=args.port)
 
