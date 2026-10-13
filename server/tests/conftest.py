@@ -53,12 +53,17 @@ class FakeEngine:
     def __init__(self):
         self.designed, self.others, self.spoken, self.during_speak, self.languages = [], [], [], None, set()
         self.directed, self.direct_error, self.ceilings = [], None, []
+        self.design_error, self.during_design = None, None
 
     def design(self, instruction, seed, language='en', others=(), ceiling=None):
         self.designed.append(instruction)
         self.ceilings.append(ceiling)
         self.others.append(list(others))
         self.languages.add(language)
+        if self.during_design:
+            self.during_design()
+        if self.design_error:
+            raise self.design_error
         return np.full(24000 * 7, 0.1, dtype='float32'), 24000
 
     def direct(self, voice_path, emotion, seed):

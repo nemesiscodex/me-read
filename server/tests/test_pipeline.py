@@ -1,9 +1,11 @@
 import asyncio
 import re
+import types
 
 import numpy as np
 import pytest
 
+from meread import pipeline as pipeline_module
 from meread import speech
 from meread.app import Hub
 from meread.tagger import TaggerError
@@ -501,3 +503,90 @@ def test_provider_change_discards_a_clip_that_was_already_generating(world):
     after = world.store.segment(title['id'])
     assert (after['audio_state'], after['audio_rev']) == ('none', title['audio_rev'] + 1)
     assert not world.store.audio_path(world.book['id'], title['id']).exists()
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(pipeline_module, 'time', types.SimpleNamespace(monotonic=lambda: now[0]))
+    return now
+
+
+def waits_for_the_speech_service(w, clock):
+    assert 'unavailable' in w.pipeline.idle['speech'] and w.pipeline.retry_at['speech'] == clock[0] + 15
+    clock[0] += 14
+    assert not w.pipeline.speech_step()
+    clock[0] += 1
+
+
+def test_a_voice_the_speech_service_cannot_design_now_is_designed_once_it_answers(world, clock):
+    world.engine.design_error = speech.Unavailable('The speech server at gpu did not answer within 300 seconds.')
+    focus(world, 0, 0, 0, 0)
+    assert world.pipeline.speech_step()
+    narrator = world.store.narrator(world.book['id'])
+    assert (narrator['voice_state'], narrator['error']) == ('none', None)
+    waits_for_the_speech_service(world, clock)
+    assert len(world.engine.designed) == 1
+    world.engine.design_error = None
+    world.drain()
+    assert world.store.narrator(world.book['id'])['voice_state'] == 'ready'
+    assert world.chapter()[0]['segments'][0]['audio_state'] == 'ready'
+
+
+def test_a_candidate_the_speech_service_cannot_design_now_stays_queued_until_it_answers(world, clock):
+    focus(world, 0, 0, 0, 0)
+    world.drain()
+    narrator = world.store.narrator(world.book['id'])['id']
+    assert world.client.post(f'/api/characters/{narrator}/voice/draft').status_code == 200
+    world.engine.design_error = speech.Unavailable('HTTP 503 loading')
+    assert world.pipeline.speech_step()
+    assert world.store.character(narrator)['draft_state'] == 'queued'
+    designs = len(world.engine.designed)
+    waits_for_the_speech_service(world, clock)
+    assert len(world.engine.designed) == designs
+    world.engine.design_error = None
+    assert world.pipeline.speech_step()
+    assert world.store.character(narrator)['draft_state'] == 'ready'
+
+
+def test_a_candidate_discarded_while_the_speech_service_was_down_is_not_queued_again(world, clock):
+    focus(world, 0, 0, 0, 0)
+    world.drain()
+    narrator = world.store.narrator(world.book['id'])['id']
+    assert world.client.post(f'/api/characters/{narrator}/voice/draft').status_code == 200
+    world.engine.during_design = lambda: world.store.discard_draft(narrator)
+    world.engine.design_error = speech.Unavailable('down')
+    assert world.pipeline.speech_step()
+    assert world.store.character(narrator)['draft_state'] == 'none'
+    world.engine.during_design = world.engine.design_error = None
+    clock[0] += 15
+    designs = len(world.engine.designed)
+    world.drain()
+    assert len(world.engine.designed) == designs and world.store.character(narrator)['draft_state'] == 'none'
+
+
+def test_a_take_the_speech_service_cannot_make_now_is_queued_again_not_failed(world, clock):
+    focus(world, 0, 0, 0, 0)
+    world.drain()
+    narrator = world.store.narrator(world.book['id'])['id']
+    world.store.request_take(narrator, 'angry')
+    world.engine.direct_error = speech.Unavailable('Could not reach the speech server at gpu.')
+    assert world.pipeline.speech_step()
+    assert world.store.take(narrator, 'angry')['state'] == 'queued'
+    assert world.store.one('SELECT error FROM voice_take WHERE character_id = ?', (narrator,))['error'] is None
+    waits_for_the_speech_service(world, clock)
+    assert len(world.engine.directed) == 1
+    world.engine.direct_error = None
+    assert world.pipeline.speech_step()
+    assert world.store.take(narrator, 'angry')['state'] == 'ready'
+
+
+def test_a_take_that_fails_for_good_is_still_failed_and_nothing_waits(world):
+    focus(world, 0, 0, 0, 0)
+    world.drain()
+    narrator = world.store.narrator(world.book['id'])['id']
+    world.store.request_take(narrator, 'angry')
+    world.engine.direct_error = speech.RemoteError('HTTP 400 invalid_request')
+    assert world.pipeline.speech_step()
+    assert world.store.take(narrator, 'angry')['state'] == 'failed'
+    assert world.pipeline.retry_at.get('speech') is None
