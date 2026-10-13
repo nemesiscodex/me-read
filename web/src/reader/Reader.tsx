@@ -19,6 +19,7 @@ import { PlayerBar } from './PlayerBar'
 import { ScenePanel } from './ScenePanel'
 import { SegmentHint, type Hint } from './SegmentHint'
 import { usePagination } from './usePagination'
+import { useMediaKeys } from './useMediaKeys'
 import { usePlayer } from './usePlayer'
 import './reader.css'
 
@@ -260,6 +261,15 @@ export function Reader({ bookId, place }: { bookId: number; place: Place | null 
   }, [currentAnchor, blocks])
 
   const toggle = useCallback(() => playerDispatch({ type: 'toggle', from: startFrom() }), [playerDispatch, startFrom])
+
+  useMediaKeys(
+    player.state,
+    playerDispatch,
+    startFrom,
+    data && chapter
+      ? { title: chapter.title.trim() || `Chapter ${chapterAt + 1}`, artist: data.book.author, album: data.book.title }
+      : null,
+  )
 
   const keys = useRef({ turn, toggle })
   useEffect(() => {

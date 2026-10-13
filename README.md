@@ -20,6 +20,8 @@ That builds the web app, starts the installed `me-read-speech` user service on `
 
 Open http://127.0.0.1:8765 and drop an EPUB on the library. Press Ctrl-C to stop the reader and close its tunnel. The GPU user service stays running. If the tunnel disconnects, the reader stops too; run the command again to reconnect. An occupied reader or tunnel port is reported before any GPU service is switched.
 
+Once you have played a line, the Mac's media keys, Now Playing in Control Center, and Bluetooth headset buttons control the reader: play, pause, next line, and previous line. Stop pauses and keeps your place.
+
 `radeon`'s speech and image services cannot share its 16 GB card. Choose what it does with the same command:
 
 ```sh
