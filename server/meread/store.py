@@ -1,5 +1,6 @@
 """SQLite storage. The database is the single source of truth for what is tagged, voiced and spoken."""
 import json
+import re
 import sqlite3
 import threading
 from pathlib import Path
@@ -7,7 +8,13 @@ from pathlib import Path
 from . import epub, segment
 from .emotions import DIRECTIONS, EMOTIONS
 
-EMOTION = f"TEXT NOT NULL DEFAULT 'neutral' CHECK (emotion IN ({', '.join(repr(e) for e in EMOTIONS)}))"
+
+
+def emotion_check(emotions):
+    return f"CHECK (emotion IN ({', '.join(repr(e) for e in emotions)}))"
+
+
+EMOTION = f"TEXT NOT NULL DEFAULT 'neutral' {emotion_check(EMOTIONS)}"
 SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS generation_identity (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1), identity TEXT NOT NULL);
@@ -65,7 +72,7 @@ CREATE TABLE IF NOT EXISTS moment_character (
 CREATE INDEX IF NOT EXISTS moment_character_of ON moment_character (character_id);
 CREATE TABLE IF NOT EXISTS voice_take (
   character_id INTEGER NOT NULL REFERENCES character(id) ON DELETE CASCADE,
-  emotion TEXT NOT NULL CHECK (emotion IN ({', '.join(repr(e) for e in DIRECTIONS)})),
+  emotion TEXT NOT NULL {emotion_check(DIRECTIONS)},
   state TEXT NOT NULL DEFAULT 'none' CHECK (state IN ('none', 'queued', 'making', 'ready', 'failed')),
   rev INTEGER NOT NULL DEFAULT 0, made_from INTEGER, error TEXT, PRIMARY KEY (character_id, emotion));
 """
@@ -118,6 +125,7 @@ class Store:
                         self.db.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
                         added.add((table, column))
         self.db.executescript(SCHEMA)
+        self._allow_new_emotions()
         if ('moment', 'importance') in added:
             # Until now only the few best moments were kept. Pages are looked through again as they are read, for
             # every moment and how much each one matters.
@@ -131,6 +139,26 @@ class Store:
         self.run("UPDATE character SET portrait_state = 'none' WHERE portrait_state = 'drawing'")
         self.run("UPDATE moment SET image_state = 'none' WHERE image_state = 'drawing'")
         self.run("UPDATE voice_take SET state = 'queued' WHERE state = 'making'")
+
+    def _allow_new_emotions(self):
+        """Let emotions added after the library was made past its checks. SQLite cannot alter a CHECK, but widening
+        one changes no stored row, so the table's definition is rewritten in place."""
+        widened = {}
+        for table, emotions in ('segment', EMOTIONS), ('voice_take', DIRECTIONS):
+            sql = self.db.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone()[0]
+            new = re.sub(r'CHECK \(emotion IN \([^)]*\)\)', emotion_check(emotions), sql)
+            if new != sql:
+                widened[table] = new
+        if not widened:
+            return
+        version = self.db.execute('PRAGMA schema_version').fetchone()[0]
+        self.db.execute('BEGIN IMMEDIATE')
+        self.db.execute('PRAGMA writable_schema = ON')
+        for table, sql in widened.items():
+            self.db.execute("UPDATE sqlite_master SET sql = ? WHERE type = 'table' AND name = ?", (sql, table))
+        self.db.execute(f'PRAGMA schema_version = {version + 1}')
+        self.db.execute('PRAGMA writable_schema = OFF')
+        self.db.execute('COMMIT')
 
     def run(self, sql, args=()):
         with self.lock:

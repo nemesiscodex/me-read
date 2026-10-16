@@ -40,7 +40,8 @@ phrase, or plain narration that follows a dialogue tag (—Sí —dijo Ana. [[q2
 
 EMOTION is how the line is said: {', '.join(EMOTIONS)}. It is "neutral" unless the text shows how it is said: \
 a dialogue tag such as shouted, whispered or sobbed, an exclamation, or the scene. Use "whisper" for whispered or \
-murmured lines. A line whose speaker is "narrator" is "neutral".
+murmured lines. Use "yelling" for a line shouted or called out to someone far away, and "angry" only when the speaker \
+is furious. A line whose speaker is "narrator" is "neutral".
 
 Rules:
 - Use dialogue tags, turn-taking and context, and always pick the most likely speaker. A quoted thought belongs to \
