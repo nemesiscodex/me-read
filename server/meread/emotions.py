@@ -20,5 +20,11 @@ DIRECTIONS = {
                 'Come closer, and keep your voice down. Nobody else can know about this. The key is under the third '
                 'stone by the well. Wait until they are all asleep, then go. I will leave the window open for you. '
                 'Not a word to anyone.'),
+    'yelling': ('Yell at the top of your lungs, as loud as you possibly can, a full-throated shout to someone far '
+                'away across a wide field. Every phrase is shouted with all your breath and force. Excited and '
+                'urgent, not angry.',
+                'HEEEY! OVER HERE! CAN YOU HEAR ME?! WE FOUND THE PATH! IT GOES AROUND THE LAKE! WAIT FOR US BY THE '
+                'OLD BRIDGE! WE WILL BE THERE BEFORE DARK! BRING THE ROPE! TELL THE OTHERS TO STAY WHERE THEY ARE! '
+                'OVER HERE!'),
 }
 EMOTIONS = 'neutral', *DIRECTIONS

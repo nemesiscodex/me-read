@@ -93,6 +93,43 @@ def test_a_library_from_before_emotions_opens_with_every_line_neutral(tmp_path):
     assert (store.segment(1)['emotion'], store.segment(1)['audio_state']) == ('neutral', 'ready')
 
 
+
+def test_a_library_from_before_yelling_lets_lines_and_takes_be_yelled(tmp_path):
+    old = sqlite3.connect(tmp_path / 'library.db')
+    old.executescript("""
+        CREATE TABLE book (id INTEGER PRIMARY KEY, title TEXT NOT NULL, author TEXT NOT NULL, block_count INTEGER NOT NULL,
+          position_block INTEGER NOT NULL DEFAULT 0, position_seq INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, language TEXT NOT NULL DEFAULT 'en');
+        CREATE TABLE block (id INTEGER PRIMARY KEY, book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
+          idx INTEGER NOT NULL, chapter INTEGER NOT NULL, tag TEXT NOT NULL, tag_state TEXT NOT NULL, UNIQUE (book_id, idx));
+        CREATE TABLE character (id INTEGER PRIMARY KEY, book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
+          name TEXT NOT NULL, role TEXT NOT NULL, gender TEXT NOT NULL, age TEXT NOT NULL, pitch TEXT NOT NULL,
+          description TEXT NOT NULL DEFAULT '', voice_state TEXT NOT NULL DEFAULT 'none', voice_rev INTEGER NOT NULL DEFAULT 0,
+          error TEXT);
+        CREATE TABLE segment (id INTEGER PRIMARY KEY, book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
+          block_id INTEGER NOT NULL REFERENCES block(id) ON DELETE CASCADE, block_idx INTEGER NOT NULL, seq INTEGER NOT NULL,
+          text TEXT NOT NULL, kind TEXT NOT NULL, character_id INTEGER REFERENCES character(id),
+          audio_state TEXT NOT NULL DEFAULT 'none', audio_rev INTEGER NOT NULL DEFAULT 0, duration REAL, error TEXT,
+          emotion TEXT NOT NULL DEFAULT 'neutral' CHECK (emotion IN ('neutral', 'happy', 'sad', 'angry', 'scared', 'whisper')));
+        CREATE TABLE voice_take (character_id INTEGER NOT NULL REFERENCES character(id) ON DELETE CASCADE,
+          emotion TEXT NOT NULL CHECK (emotion IN ('happy', 'sad', 'angry', 'scared', 'whisper')),
+          state TEXT NOT NULL DEFAULT 'none' CHECK (state IN ('none', 'queued', 'making', 'ready', 'failed')),
+          rev INTEGER NOT NULL DEFAULT 0, made_from INTEGER, error TEXT, PRIMARY KEY (character_id, emotion));
+        INSERT INTO book (id, title, author, block_count) VALUES (1, 'Old', '', 1);
+        INSERT INTO block VALUES (1, 1, 0, 0, 'p', 'tagged');
+        INSERT INTO character (id, book_id, name, role, gender, age, pitch, voice_state) VALUES (1, 1, 'Ann', 'named', 'female', 'adult', 'low', 'ready');
+        INSERT INTO segment (id, book_id, block_id, block_idx, seq, text, kind, character_id, audio_state, emotion)
+          VALUES (1, 1, 1, 0, 0, '“Over here!”', 'speech', 1, 'ready', 'angry');
+    """)
+    old.close()
+    store = Store(tmp_path)
+    assert store.segment(1)['emotion'] == 'angry'
+    assert store.correct_line(1, emotion='yelling')['emotion'] == 'yelling'
+    store.request_take(1, 'yelling')
+    assert store.take(1, 'yelling')['state'] == 'queued'
+    assert store.one('PRAGMA integrity_check')['integrity_check'] == 'ok'
+
+
 def cast(w, book_id=None):
     return {c['name']: c for c in w.store.characters(book_id or w.book['id'])}
 
@@ -187,7 +224,7 @@ def test_the_cast_shows_every_take_and_plays_the_ready_ones(world):
     world.drain()
     tom = next(c for c in world.client.get(f"/api/books/{world.book['id']}").json()['characters'] if c['name'] == 'Tom')
     assert [(t['emotion'], t['state']) for t in tom['takes']] == [
-        ('happy', 'none'), ('sad', 'none'), ('angry', 'ready'), ('scared', 'none'), ('whisper', 'none')]
+        ('happy', 'none'), ('sad', 'none'), ('angry', 'ready'), ('scared', 'none'), ('whisper', 'none'), ('yelling', 'none')]
     url = f"/api/characters/{tom['id']}/takes"
     reply = world.client.get(f'{url}/angry/audio')
     assert reply.status_code == 200 and reply.content == world.store.take_path(tom, 'angry').read_bytes()

@@ -10,7 +10,7 @@ export type AudioState = 'none' | 'generating' | 'ready' | 'failed'
 export type DraftState = 'none' | 'queued' | 'designing' | 'ready' | 'failed'
 export type DrawState = 'none' | 'drawing' | 'ready' | 'failed'
 export type Provider = 'claude' | 'codex'
-export const EMOTIONS = ['neutral', 'happy', 'sad', 'angry', 'scared', 'whisper'] as const
+export const EMOTIONS = ['neutral', 'happy', 'sad', 'angry', 'scared', 'whisper', 'yelling'] as const
 export type Emotion = (typeof EMOTIONS)[number]
 /** 'none' also for a take made from a voice the character no longer has; it is made again when a line needs it. */
 export type TakeState = 'none' | 'queued' | 'making' | 'ready' | 'failed'
