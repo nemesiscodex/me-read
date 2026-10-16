@@ -33,6 +33,8 @@ TRANSCRIBER_REVISION = '624c19c9af5603fa73b83bce14d4aeea96156d18'
 TRANSCRIPTION_POLICY = 'whisper-auto-language-16khz-v1'
 CACHE_SIZE = 24
 CFG_SCALE = 4.0
+# Guidance above 1 pulls a take away from the character's voice. At 4, an angry take sounds like another character.
+TAKE_CFG_SCALE = 1.0
 
 
 @dataclass(frozen=True)
@@ -506,12 +508,13 @@ class Engine:
             path.write_bytes(wav)
             mx.random.seed(seed)
             return self._generate(director.generate(text=script, instruct=instruction, ref_audio=str(path),
-                                                    ref_text=transcript, cfg_scale=CFG_SCALE, seed=seed, stream=False),
+                                                    ref_text=transcript, cfg_scale=TAKE_CFG_SCALE, seed=seed,
+                                                    stream=False),
                                   director.sample_rate)
 
     def _gpu_take(self, wav, transcript, instruction, script, seed):
         return self._cloned('breeze', wav, script, seed, ref_text=transcript, instructions=instruction,
-                            cfg_scale=CFG_SCALE)
+                            cfg_scale=TAKE_CFG_SCALE)
 
     def _cloner(self, language):
         from mlx_audio.tts.utils import load_model

@@ -1,0 +1,27 @@
+diff --git i/examples/cli/crispasr_tts_chunking.cpp w/examples/cli/crispasr_tts_chunking.cpp
+index dbc2a480..1084649f 100755
+--- i/examples/cli/crispasr_tts_chunking.cpp
++++ w/examples/cli/crispasr_tts_chunking.cpp
+@@ -173,6 +173,22 @@ std::vector<std::string> crispasr_tts_plan_chunks_for_backend(const std::string&
+             return {text};
+     }
+ 
++    // Breeze TTS 2 packs whole sentences into prompts of up to max_chars, as its
++    // reference generate() does. A prompt per sentence draws a new speaker for
++    // every sentence of a voice design, which has no reference clip to hold it.
++    if (backend_name == "bt2-tts") {
++        std::vector<std::string> packed;
++        for (const std::string& sentence : crispasr_tts_split_sentences(text, max_chars)) {
++            if (!packed.empty() && packed.back().size() + 1 + sentence.size() <= max_chars)
++                packed.back() += " " + sentence;
++            else
++                packed.push_back(sentence);
++        }
++        if (packed.empty())
++            packed.push_back(text);
++        return packed;
++    }
++
+     std::vector<std::string> result = crispasr_tts_split_sentences(text, max_chars);
+     if (result.empty())
+         result.push_back(text);
