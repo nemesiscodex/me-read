@@ -29,12 +29,13 @@ Two settings matter for these numbers, and the service sets both itself. `MIOPEN
 
 ## Build CrispASR
 
-Needs ROCm with `hipcc`, `cmake`, `clang` and the hipBLAS and rocBLAS CMake packages. Use commit `3386096f`. It reads the voice named in each request from `--voice-dir` and supports Breeze's instructions and `cfg_scale`, so no patch is needed.
+Needs ROCm with `hipcc`, `cmake`, `clang` and the hipBLAS and rocBLAS CMake packages. Use commit `3386096f` with `crispasr-breeze-one-prompt.patch` from this folder. That commit reads the voice named in each request from `--voice-dir` and supports Breeze's instructions and `cfg_scale`. Its server sends Breeze each sentence as a separate prompt, though, so a designed voice changes speaker at every sentence. The patch packs sentences into prompts of up to 600 characters, as Breeze itself does.
 
 ```sh
 git clone https://github.com/CrispStrobe/CrispASR ~/me-read-speech/src/crispasr
 cd ~/me-read-speech/src/crispasr
 git checkout 3386096f
+git apply /path/to/me-read/speech-service/crispasr-breeze-one-prompt.patch
 git submodule update --init --recursive
 export PATH=/opt/rocm/bin:/opt/rocm/llvm/bin:$PATH
 export HIPCXX="$(/opt/rocm/bin/hipconfig -l)/clang"
@@ -171,7 +172,7 @@ JSON:
 | `voice` | an uploaded voice. Required for `chatterbox`. With `breeze` it makes a clone, or a direction when `instructions` is also given. Not allowed with `qwen`. |
 | `ref_text` | what the voice's WAV says, for `breeze`. Without it the uploaded transcript is used. |
 | `instructions` | a voice description (design) or how to say the line (direction). Required for `qwen`. With `breeze`, no voice means design and a voice means direction. Not allowed with `chatterbox`. |
-| `cfg_scale` | `breeze` only. me-read sends 4 with instructions. |
+| `cfg_scale` | `breeze` only. me-read sends 4 when it designs a voice and 1 when it directs a take. |
 | `language` | ISO code such as `en` or `es`. `chatterbox` uses Turbo for `en`, which is the default, and Multilingual otherwise. `qwen` speaks it. |
 | `seed` | integer. The same seed and inputs give the same audio samples. |
 | `consent_attestation` | required whenever `voice` is given. Sent to CrispASR as both its consent and its marking statement. |

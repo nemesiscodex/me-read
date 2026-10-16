@@ -228,7 +228,7 @@ def test_breeze_directs_an_emotion_take_of_any_saved_voice_whichever_narrator_re
     audio, rate = engine.direct(voice, 'angry', 9)
     instruction, script = DIRECTIONS['angry']
     assert models.spoken[0] == {'text': script, 'wav': voice.read_bytes(), 'ref_text': 'Primera frase.', 'seed': 9,
-                               'stream': False, 'instruct': instruction, 'cfg_scale': 4.0}
+                               'stream': False, 'instruct': instruction, 'cfg_scale': 1.0}
     assert rate == 24000 and len(audio) == speech.SAMPLE_SECONDS * rate
     assert models.loads == [speech.TRANSCRIBER, speech.BREEZE]
     engine.direct(voice, 'sad', 9)

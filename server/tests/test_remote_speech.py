@@ -647,7 +647,7 @@ def test_a_take_is_directed_by_breeze_on_the_service_from_the_uploaded_voice_and
     wav = voice.read_bytes()
     assert speech_server.uploads == [{'voice': wav, 'name': name_for(wav), 'consent_attestation': CONSENT}]
     assert speech_server.speeches == [asked(model='breeze', input=script, voice=name_for(wav), ref_text='The saved words.',
-                                            instructions=instruction, cfg_scale=4.0, seed=9)]
+                                            instructions=instruction, cfg_scale=1.0, seed=9)]
     assert rate == 24000 and len(audio) == speech.SAMPLE_SECONDS * rate
     assert models.loads == [speech.TRANSCRIBER]
     engine.direct(voice, 'sad', 9)
