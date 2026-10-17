@@ -4,7 +4,7 @@
 
 Read any EPUB as a radio play. me-read gives the narrator and every character their own voice, then reads the book to you while you follow the text.
 
-[![Watch the 45-second demo, with sound](docs/media/demo-poster.jpg)](docs/media/demo.mp4)
+https://github.com/user-attachments/assets/2e310850-259e-4e7d-a317-d64d13834d19
 
 *45 seconds, with sound. The video shows a real book, real voices, and changing a voice you don't like.*
 
