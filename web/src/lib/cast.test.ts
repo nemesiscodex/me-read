@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { changedFields, characterHue, inputOf, narratorOf, sortCast } from './cast'
+import { changedFields, characterHue, findCast, inputOf, narratorOf, sortCast } from './cast'
 import { character } from './fixtures'
 import { bookHref, parseRoute } from './route'
 
@@ -33,6 +33,19 @@ describe('cast', () => {
 
   it('lists the narrator, then named characters, then extras, busiest first', () => {
     expect(sortCast(cast).map((c) => c.id)).toEqual([3, 4, 2, 1])
+  })
+
+  it('finds characters by any part of their name, ignoring case and accents', () => {
+    const named = [
+      character(1, { name: 'José Arcadio Buendía', line_count: 3 }),
+      character(2, { name: 'Aureliano Buendía', line_count: 9 }),
+      character(3, { name: 'Úrsula Iguarán', line_count: 5 }),
+    ]
+    expect(findCast(named, 'buendia').map((c) => c.id)).toEqual([2, 1])
+    expect(findCast(named, 'URSU').map((c) => c.id)).toEqual([3])
+    expect(findCast(named, 'jose buen').map((c) => c.id)).toEqual([1])
+    expect(findCast(named, 'jose aureliano')).toEqual([])
+    expect(findCast(named, '  ').map((c) => c.id)).toEqual([2, 3, 1])
   })
 
   it('finds the narrator', () => {

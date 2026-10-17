@@ -1,8 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import { api, EMOTIONS, type Block, type Character, type CharacterInput, type Emotion, type Moment, type Segment } from '../api'
-import { EMPTY_CHARACTER, sortCast } from '../lib/cast'
+import { EMPTY_CHARACTER, findCast } from '../lib/cast'
 import type { BlockRange } from '../lib/pages'
 import { hueStyle } from './BlockView'
+import { CastSearch } from './CastSearch'
 import { CharacterFields } from './CharacterFields'
 
 interface Props {
@@ -34,6 +35,8 @@ export function CorrectionPopover({ bookId, segment, block, characters, at, page
   const ref = useRef<HTMLDivElement>(null)
   const [position, setPosition] = useState(at)
   const [draft, setDraft] = useState<CharacterInput | null>(null)
+  const [query, setQuery] = useState('')
+  const shown = findCast(characters, query)
   const [busy, setBusy] = useState(false)
   const [starring, setStarring] = useState(false)
   const [message, setMessage] = useState<{ text: string; problem: boolean } | null>(null)
@@ -152,8 +155,10 @@ export function CorrectionPopover({ bookId, segment, block, characters, at, page
       ) : (
         <>
           <h3 className="popover-heading">Who says this?</h3>
+          <CastSearch value={query} onChange={setQuery} onPick={() => shown[0] && !busy && void assign(shown[0].id)} />
           <ul className="speaker-list">
-            {sortCast(characters).map((character) => (
+            {shown.length === 0 && <li className="speaker-empty">Nobody is called “{query.trim()}”.</li>}
+            {shown.map((character) => (
               <li key={character.id}>
                 <button
                   className="speaker-option"
@@ -191,7 +196,7 @@ export function CorrectionPopover({ bookId, segment, block, characters, at, page
             </>
           )}
           <div className="popover-actions">
-            <button className="menu-button" onClick={() => setDraft(EMPTY_CHARACTER)} disabled={busy}>
+            <button className="menu-button" onClick={() => setDraft({ ...EMPTY_CHARACTER, name: query.trim() })} disabled={busy}>
               Someone new…
             </button>
             <button className="menu-button" onClick={() => void regenerate()} disabled={busy}>

@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { api, type Character, type CharacterInput, type Settings, type Take, type TakeState, type VoiceState } from '../api'
 import { Icon } from '../Icon'
-import { changedFields, inputOf, sortCast } from '../lib/cast'
+import { changedFields, findCast, inputOf, sortCast } from '../lib/cast'
 import { illustrating } from '../lib/moments'
 import { hueStyle } from './BlockView'
+import { CastSearch } from './CastSearch'
 import { CharacterFields } from './CharacterFields'
 
 interface Props {
@@ -51,6 +52,8 @@ function portraitNote(character: Character, drawing: boolean): string {
 export function CastPanel({ characters, settings, emotions, onClose, onCharacter, onMerged, onSample }: Props) {
   const portraits = settings !== null && settings.image_url !== ''
   const [openId, setOpenId] = useState<number | null>(null)
+  const [query, setQuery] = useState('')
+  const shown = findCast(characters, query)
   const [sampleOf, setSampleOf] = useState<string | null>(null)
   const [takeProblem, setTakeProblem] = useState<{ id: number; text: string } | null>(null)
   const sample = useRef<HTMLAudioElement | null>(null)
@@ -102,8 +105,12 @@ export function CastPanel({ characters, settings, emotions, onClose, onCharacter
           <Icon name="close" />
         </button>
       </header>
+      <div className="cast-search-row">
+        <CastSearch value={query} onChange={setQuery} onPick={() => shown[0] && setOpenId(shown[0].id)} />
+      </div>
       <ul className="cast-list">
-        {sortCast(characters).map((character) => (
+        {shown.length === 0 && <li className="cast-empty">Nobody in the cast is called “{query.trim()}”.</li>}
+        {shown.map((character) => (
           <li key={character.id} className="cast-item" data-open={openId === character.id || undefined}>
             <div className="cast-row">
               <span
