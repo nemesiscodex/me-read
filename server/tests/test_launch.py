@@ -51,12 +51,24 @@ def commands(monkeypatch):
     return commands
 
 
-def test_default_start_owns_speech_tunnel_and_wires_remote_reader(tmp_path, commands):
-    assert launch.main(['--home', str(tmp_path), '--tts-consent', CONSENT, '--port', '9000']) == 0
-    install, build, service, tunnel, app = commands.commands
+def remember_host(home, host='gpu-box'):
+    (home / 'launcher.json').write_text(json.dumps({'gpu_host': host}))
+
+
+def test_without_a_gpu_machine_start_runs_everything_here(tmp_path, commands):
+    assert launch.main(['--home', str(tmp_path)]) == 0
+    install, build, app = commands.commands
     assert install == ['pnpm', 'install', '--frozen-lockfile', '--silent']
     assert build == ['pnpm', 'build']
-    assert service[-2:] == ['radeon', 'systemctl --user start me-read-speech.service']
+    assert '--tts-url' not in app and '--image-url' not in app
+    assert not (tmp_path / 'launcher.json').exists()
+
+
+def test_remembered_gpu_machine_owns_speech_tunnel_and_wires_remote_reader(tmp_path, commands):
+    remember_host(tmp_path)
+    assert launch.main(['--home', str(tmp_path), '--tts-consent', CONSENT, '--port', '9000']) == 0
+    install, build, service, tunnel, app = commands.commands
+    assert service[-2:] == ['gpu-box', 'systemctl --user start me-read-speech.service']
     assert '-N' in tunnel and '127.0.0.1:8781:127.0.0.1:8781' in tunnel
     assert app[app.index('--tts-url') + 1] == 'http://127.0.0.1:8781'
     assert app[app.index('--tts-consent') + 1] == CONSENT
@@ -72,14 +84,42 @@ def test_images_mode_uses_image_tunnel_and_local_narration(tmp_path, commands):
     app = commands.commands[-1]
     assert app[app.index('--image-url') + 1] == 'http://127.0.0.1:8766'
     assert '--tts-url' not in app and '--tts-consent' not in app
-    assert not (tmp_path / 'launcher.json').exists()
+    assert json.loads((tmp_path / 'launcher.json').read_text()) == {'gpu_host': 'other-gpu'}
+
+
+def test_given_gpu_host_is_remembered_until_forgotten(tmp_path, commands):
+    assert launch.main(['--home', str(tmp_path), '--gpu-host', 'gpu-box', '--tts-consent', CONSENT]) == 0
+    assert json.loads((tmp_path / 'launcher.json').read_text()) == {'gpu_host': 'gpu-box', 'tts_consent': CONSENT}
+    commands.commands.clear()
+    assert launch.main(['--home', str(tmp_path)]) == 0
+    assert commands.commands[2][-2:] == ['gpu-box', 'systemctl --user start me-read-speech.service']
+    commands.commands.clear()
+    assert launch.main(['--home', str(tmp_path), '--forget-gpu-host']) == 0
+    assert all(command[0] != 'ssh' for command in commands.commands)
+    assert json.loads((tmp_path / 'launcher.json').read_text()) == {'tts_consent': CONSENT}
+
+
+def test_start_warns_when_no_tagger_cli_is_installed(tmp_path, commands, monkeypatch, capsys):
+    monkeypatch.setattr(launch.shutil, 'which', lambda name: None)
+    assert launch.main(['--home', str(tmp_path)]) == 0
+    assert 'Neither the claude nor the codex CLI' in capsys.readouterr().out
+    monkeypatch.setattr(launch.shutil, 'which', lambda name: '/bin/codex' if name == 'codex' else None)
+    assert launch.main(['--home', str(tmp_path)]) == 0
+    assert 'Neither' not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('mode', ['speech', 'images'])
+def test_gpu_mode_without_a_machine_fails_before_any_work(tmp_path, commands, mode):
+    assert launch.main(['--home', str(tmp_path), '--gpu', mode]) == 1
+    assert commands.commands == []
 
 
 @pytest.mark.parametrize('flags', [
     ['--gpu', 'local'],
     ['--tts-url', 'http://custom:8781', '--tts-consent', CONSENT],
 ])
-def test_local_mode_and_explicit_external_service_skip_ssh(tmp_path, commands, flags):
+def test_local_mode_and_explicit_external_service_skip_ssh_even_with_a_machine(tmp_path, commands, flags):
+    remember_host(tmp_path)
     assert launch.main(['--home', str(tmp_path), *flags]) == 0
     assert len(commands.commands) == 3
     assert all(command[0] != 'ssh' for command in commands.commands)
@@ -89,6 +129,7 @@ def test_local_mode_and_explicit_external_service_skip_ssh(tmp_path, commands, f
     ['--gpu', 'images', '--tts-provider', 'breeze-gguf'],
     ['--gpu', 'speech', '--tts-url', 'http://custom:8781'],
     ['--gpu-host=-bad'],
+    ['--gpu-host='],
     ['--gpu', 'local', '--tts-consent', CONSENT],
     ['--gpu', 'local', '--image-url', 'ftp://bad'],
 ])
@@ -99,12 +140,14 @@ def test_invalid_combination_fails_before_build_or_remote_changes(tmp_path, comm
 
 
 def test_build_failure_never_switches_remote_service(tmp_path, commands):
+    remember_host(tmp_path)
     commands.fail_build = True
     assert launch.main(['--home', str(tmp_path), '--tts-consent', CONSENT]) == 1
     assert len(commands.commands) == 1 and commands.closed
 
 
 def test_port_conflict_fails_before_remote_changes(tmp_path, commands, monkeypatch):
+    remember_host(tmp_path)
     def occupied(*args):
         raise OSError('address already in use')
     monkeypatch.setattr(launch, 'unused_port', occupied)
@@ -113,6 +156,7 @@ def test_port_conflict_fails_before_remote_changes(tmp_path, commands, monkeypat
 
 
 def test_tunnel_loss_stops_app_and_cleans_up(tmp_path, commands, monkeypatch):
+    remember_host(tmp_path)
     commands.app_running = True
     def start(command, cwd=None):
         commands.commands.append(command)
@@ -123,11 +167,12 @@ def test_tunnel_loss_stops_app_and_cleans_up(tmp_path, commands, monkeypatch):
 
 
 def test_consent_is_saved_exactly_and_reused_without_prompt(tmp_path, monkeypatch):
+    remember_host(tmp_path)
     args = SimpleNamespace(home=tmp_path, tts_consent=CONSENT,
                            tts_provider='chatterbox', tts_url='http://127.0.0.1:8781')
     assert launch.consent_for(args) == CONSENT
     saved = tmp_path / 'launcher.json'
-    assert json.loads(saved.read_text()) == {'tts_consent': CONSENT}
+    assert json.loads(saved.read_text()) == {'gpu_host': 'gpu-box', 'tts_consent': CONSENT}
     assert saved.stat().st_mode & 0o777 == 0o600
     args.tts_consent = None
     monkeypatch.setattr(sys, 'stdin', io.StringIO())
@@ -135,12 +180,15 @@ def test_consent_is_saved_exactly_and_reused_without_prompt(tmp_path, monkeypatc
 
 
 def test_missing_consent_never_invents_one_or_starts_remote_work(tmp_path, commands, monkeypatch):
+    remember_host(tmp_path)
     monkeypatch.setattr(sys, 'stdin', io.StringIO())
     assert launch.main(['--home', str(tmp_path)]) == 1
-    assert not commands.commands and not (tmp_path / 'launcher.json').exists()
+    assert not commands.commands
+    assert json.loads((tmp_path / 'launcher.json').read_text()) == {'gpu_host': 'gpu-box'}
 
 
 def test_first_run_prompts_and_remembers_statement(tmp_path, commands, monkeypatch):
+    remember_host(tmp_path)
     monkeypatch.setattr(sys, 'stdin', SimpleNamespace(isatty=lambda: True))
     monkeypatch.setattr('builtins.input', lambda prompt: CONSENT)
     assert launch.main(['--home', str(tmp_path)]) == 0

@@ -14,7 +14,7 @@ uv run --frozen python server.py
 
 The first start downloads about 16 GB of model files into `~/.cache/huggingface`, and loading takes under a minute after that. The service listens on port 8766 on every interface; `--host` and `--port` change that. It has no login, so anyone who can reach the port can use the GPU: keep it on a network you trust.
 
-Enter `http://<this machine>:8766` as the image service URL in me-read's settings.
+Enter `http://<this machine>:8766` as the image service URL in me-read's settings. With the user service below installed, `./start --gpu images` on the Mac starts it, tunnels it over SSH, and sets the address for you; see [the GPU machine guide](../docs/gpu-machine.md).
 
 To keep it running across logins and reboots, install it as a user service. The unit expects this directory at `~/me-read-imager`.
 
