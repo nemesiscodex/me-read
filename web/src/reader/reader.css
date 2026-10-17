@@ -733,6 +733,22 @@
   color: var(--ink-soft);
 }
 
+.cast-search {
+  width: 100%;
+  margin-bottom: 0.3rem;
+  padding: 0.4em 0.6em;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--paper);
+}
+
+.speaker-empty,
+.cast-empty {
+  padding: 0.4em 0.6em;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+
 .speaker-list {
   max-height: 14rem;
   overflow-y: auto;
@@ -861,6 +877,10 @@
   font-family: var(--serif);
   font-size: 1.5rem;
   font-weight: 500;
+}
+
+.cast-search-row {
+  padding: 0 1.25rem 0.5rem;
 }
 
 .cast-list {

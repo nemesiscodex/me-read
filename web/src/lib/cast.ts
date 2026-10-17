@@ -34,6 +34,21 @@ export function sortCast(characters: Character[]): Character[] {
   )
 }
 
+function folded(text: string): string {
+  return text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
+}
+
+/** The sorted cast whose names hold every word of the query, ignoring case and accents. */
+export function findCast(characters: Character[], query: string): Character[] {
+  const words = folded(query).split(/\s+/).filter(Boolean)
+  const sorted = sortCast(characters)
+  if (words.length === 0) return sorted
+  return sorted.filter((c) => {
+    const name = folded(c.name)
+    return words.every((word) => name.includes(word))
+  })
+}
+
 export function inputOf(character: Character): CharacterInput {
   const { name, gender, age, pitch, description, appearance } = character
   return { name, gender, age, pitch, description, appearance }
