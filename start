@@ -1,6 +1,16 @@
 #!/bin/sh
-# Start the app and its GPU service. See ./start --help for local and illustration modes.
 set -e
 cd "$(dirname "$0")"
+
+if [ "$(uname -s)-$(uname -m)" != "Darwin-arm64" ]; then
+	echo "me-read: needs macOS on Apple Silicon, because speech runs with MLX." >&2
+	exit 1
+fi
+for tool in uv node pnpm; do
+	if ! command -v "$tool" >/dev/null; then
+		echo "me-read: $tool is missing. Install it with: brew install $tool" >&2
+		exit 1
+	fi
+done
 
 cd server && exec uv run --frozen python -m meread.launch "$@"

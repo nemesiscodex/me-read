@@ -1,9 +1,9 @@
 import pytest
 
-from meread import epub
+from meread import HOME, epub
 from meread.segment import chunks, quote_style, segments, spans, speakable
 
-ALICE = '/Users/julio/.local/share/me-read/samples/gutenberg/alice.epub'
+ALICE = HOME / 'samples/gutenberg/alice.epub'
 
 
 def test_quotes_become_speech_and_the_rest_narration():
@@ -41,7 +41,7 @@ def test_speakable_drops_quote_marks_and_softens_shouting():
     assert speakable(' — ') == ''
 
 
-@pytest.mark.skipif(not __import__('os').path.exists(ALICE), reason='sample book not downloaded')
+@pytest.mark.skipif(not ALICE.exists(), reason=f'sample book not downloaded to {ALICE}')
 def test_a_real_book_splits_losslessly_into_speakable_pieces():
     book = epub.read(ALICE)
     assert book.title == "Alice's Adventures in Wonderland" and book.author == 'Lewis Carroll'

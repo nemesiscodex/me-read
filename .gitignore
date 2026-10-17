@@ -5,6 +5,9 @@ node_modules/
 dist/
 *.tsbuildinfo
 .DS_Store
+
+# Keep the documentation even where a global ignore file skips docs/ folders.
+!docs/
 # Private reading data and demo captures.
 /artifacts/
 /.audit/

@@ -102,17 +102,17 @@ Flags, all optional:
 It has no login, so keep it on localhost and reach it from the Mac through an SSH tunnel:
 
 ```sh
-ssh -N -L 8781:127.0.0.1:8781 radeon
+ssh -N -L 8781:127.0.0.1:8781 GPU_HOST
 ```
 
-Then start me-read with `--tts-url http://127.0.0.1:8781` and your own `--tts-consent` statement.
+Replace `GPU_HOST` with this machine's SSH name. Then start me-read with `--tts-url http://127.0.0.1:8781` and your own `--tts-consent` statement. With the user service installed, `./start --gpu-host GPU_HOST` does all of this for you; see [the GPU machine guide](../docs/gpu-machine.md).
 
-To keep it running across logins and reboots, install it as a user service. `me-read-speech.service` gives CrispASR `/opt/rocm/lib`. If your hipBLAS and rocBLAS are elsewhere, override that in a drop-in, as the test machine does:
+To keep it running across logins and reboots, install it as a user service. `me-read-speech.service` gives CrispASR `/opt/rocm/lib`. If your hipBLAS and rocBLAS are elsewhere, override that in a drop-in. The test machine keeps a private copy of the libraries next to the system ROCm, so its drop-in looks like this:
 
 ```sh
 cp me-read-speech.service ~/.config/systemd/user/
 mkdir -p ~/.config/systemd/user/me-read-speech.service.d
-printf '[Service]\nEnvironment=CRISPASR_LIBRARY_PATH=%%h/me-read-rocm72-Z1wb/prefix/opt/rocm/lib:/opt/rocm/lib\n' \
+printf '[Service]\nEnvironment=CRISPASR_LIBRARY_PATH=%%h/rocm-blas/opt/rocm/lib:/opt/rocm/lib\n' \
   > ~/.config/systemd/user/me-read-speech.service.d/rocm.conf
 systemctl --user daemon-reload
 systemctl --user enable --now me-read-speech

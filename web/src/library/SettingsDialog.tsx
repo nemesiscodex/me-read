@@ -80,7 +80,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                 type="text"
                 value={settings.image_url}
                 spellCheck={false}
-                placeholder="http://192.168.1.20:8000"
+                placeholder="http://127.0.0.1:8766"
                 onChange={(event) => setSettings({ ...settings, image_url: event.target.value })}
               />
             </label>

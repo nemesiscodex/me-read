@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import signal
 import socket
 import subprocess
@@ -86,13 +87,28 @@ def wait_for_service(url, tunnel, timeout=180):
                        'Check the service with systemctl --user status on the GPU computer.')
 
 
+def remembered(home):
+    path = home / 'launcher.json'
+    if not path.exists():
+        return {}
+    saved = json.loads(path.read_text())
+    if not isinstance(saved, dict):
+        raise ValueError(f'{path} must contain a JSON object')
+    return saved
+
+
+def save(home, saved):
+    home.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode='w', dir=home, delete=False) as file:
+        os.fchmod(file.fileno(), 0o600)
+        json.dump(saved, file)
+    os.replace(file.name, home / 'launcher.json')
+
+
 def consent_for(args):
-    path = Path(args.home).expanduser() / 'launcher.json'
     consent = args.tts_consent
-    if consent is None and path.exists():
-        saved = json.loads(path.read_text())
-        if not isinstance(saved, dict):
-            raise ValueError(f'{path} must contain a JSON object with tts_consent')
+    saved = remembered(args.home)
+    if consent is None:
         consent = saved.get('tts_consent')
     if consent is None:
         if not sys.stdin.isatty():
@@ -102,16 +118,26 @@ def consent_for(args):
             'It will be saved for later starts of this library.')
         consent = input('Your consent statement: ')
     if not isinstance(consent, str):
-        raise ValueError(f'tts_consent in {path} must be text')
+        raise ValueError(f'tts_consent in {args.home / "launcher.json"} must be text')
     # Use the same validation as the server; never invent a default statement.
     speech.connect(args.tts_provider, args.tts_url, consent)
-    if not path.exists() or args.tts_consent is not None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False) as saved:
-            json.dump({'tts_consent': consent}, saved)
-        os.replace(saved.name, path)
-        say(f'Consent saved in {path}.')
+    if consent != saved.get('tts_consent'):
+        save(args.home, {**saved, 'tts_consent': consent})
+        say(f'Consent saved in {args.home / "launcher.json"}.')
     return consent
+
+
+def gpu_host_for(args):
+    saved = remembered(args.home)
+    if args.forget_gpu_host:
+        saved.pop('gpu_host', None)
+        save(args.home, saved)
+    elif args.gpu_host is not None:
+        if not args.gpu_host or args.gpu_host.startswith('-'):
+            raise ValueError('--gpu-host must be an SSH host name')
+        save(args.home, {**saved, 'gpu_host': args.gpu_host})
+        return args.gpu_host
+    return saved.get('gpu_host')
 
 
 def server_command(args):
@@ -131,21 +157,28 @@ def interrupted(signum, frame):
 def main(argv=None):
     parser = argument_parser()
     parser.prog = './start'
-    parser.description = 'Build and start me-read, including its GPU service and SSH tunnel.'
+    parser.description = ('Build and start me-read. With a GPU machine, also start its speech or image service '
+                          'and open an SSH tunnel to it.')
     parser.add_argument('--gpu', choices=('speech', 'images', 'local'),
-                        help='GPU work (default: speech on radeon; images uses local speech; local skips SSH)')
-    parser.add_argument('--gpu-host', default='radeon', help='SSH host with installed me-read user services (default: radeon)')
+                        help='what the GPU machine does: speech, images (speech then runs here), or local to run '
+                             'everything here (default: speech when a GPU machine is remembered, otherwise local)')
+    machine = parser.add_mutually_exclusive_group()
+    machine.add_argument('--gpu-host', help='SSH name of a machine with the me-read user services installed, '
+                                            'remembered for later starts of this library')
+    machine.add_argument('--forget-gpu-host', action='store_true', help='stop using the remembered GPU machine')
     args = parser.parse_args(argv)
     args.home = Path(args.home).expanduser().resolve()
-    mode = args.gpu or ('local' if args.tts_url else 'speech')
     processes = Processes()
     signal.signal(signal.SIGTERM, interrupted)
     try:
+        host = gpu_host_for(args)
+        mode = args.gpu or ('local' if args.tts_url or not host else 'speech')
         if mode != 'local':
             if args.tts_url is not None:
                 raise ValueError('use --gpu local with a custom --tts-url; managed GPU modes create their own tunnel')
-            if not args.gpu_host or args.gpu_host.startswith('-'):
-                raise ValueError('--gpu-host must be an SSH host name')
+            if not host:
+                raise ValueError(f'--gpu {mode} needs a GPU machine. Pass --gpu-host HOST once; '
+                                 'see docs/gpu-machine.md')
             service, port = SERVICES[mode]
             unused_port('127.0.0.1', port)
             if mode == 'speech':
@@ -160,16 +193,19 @@ def main(argv=None):
         if args.image_url is not None:
             args.image_url = SettingsChanges(image_url=args.image_url).image_url
 
+        if not (shutil.which('claude') or shutil.which('codex')):
+            say('Neither the claude nor the codex CLI is on PATH. Without one, the narrator reads every line. '
+                'Install one and log in to get a cast.')
         say('Building the web app…')
         processes.run(['pnpm', 'install', '--frozen-lockfile', '--silent'], ROOT / 'web')
         processes.run(['pnpm', 'build'], ROOT / 'web')
         tunnel = None
         if mode != 'local':
-            say(f'Starting {service} on {args.gpu_host} (the other GPU service stops).')
-            processes.run(['ssh', *SSH_OPTIONS, args.gpu_host,
+            say(f'Starting {service} on {host} (the other GPU service stops).')
+            processes.run(['ssh', *SSH_OPTIONS, host,
                            f'systemctl --user start {service}.service'], timeout=90)
             tunnel = processes.start(['ssh', *SSH_OPTIONS, '-o', 'ExitOnForwardFailure=yes', '-N',
-                                      '-L', f'127.0.0.1:{port}:127.0.0.1:{port}', args.gpu_host])
+                                      '-L', f'127.0.0.1:{port}:127.0.0.1:{port}', host])
             url = args.tts_url if mode == 'speech' else args.image_url
             say(f'Waiting for {mode} at {url}…')
             wait_for_service(url, tunnel)
