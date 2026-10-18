@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
-import { api, EMOTIONS, type Block, type Character, type CharacterInput, type Emotion, type Moment, type Segment } from '../api'
+import { api, EMOTION_LABELS, type Block, type Character, type CharacterInput, type Emotion, type Moment, type Segment } from '../api'
 import { EMPTY_CHARACTER, findCast } from '../lib/cast'
 import type { BlockRange } from '../lib/pages'
 import { hueStyle } from './BlockView'
@@ -16,8 +16,8 @@ interface Props {
   pages: { current: BlockRange | null; next: BlockRange | null }
   /** Illustrations are on and the paragraph has no starred picture yet. */
   canStar: boolean
-  /** The book's lines are read in their emotions, which only English books are. */
-  emotions: boolean
+  /** Delivery options supported by this book and narrator. */
+  emotions: readonly Emotion[]
   onClose: () => void
   onSegment: (segment: Segment) => void
   onCharacter: (character: Character) => void
@@ -177,11 +177,11 @@ export function CorrectionPopover({ bookId, segment, block, characters, at, page
               </li>
             ))}
           </ul>
-          {emotions && segment.kind === 'speech' && (
+          {emotions.length > 1 && segment.kind === 'speech' && (
             <>
               <h3 className="popover-heading popover-heading-spaced">How is it said?</h3>
               <div className="emotion-list">
-                {EMOTIONS.map((emotion) => (
+                {emotions.map((emotion) => (
                   <button
                     key={emotion}
                     className="emotion-option"
@@ -189,7 +189,7 @@ export function CorrectionPopover({ bookId, segment, block, characters, at, page
                     disabled={busy}
                     aria-pressed={emotion === segment.emotion}
                   >
-                    {emotion}
+                    {EMOTION_LABELS[emotion]}
                   </button>
                 ))}
               </div>

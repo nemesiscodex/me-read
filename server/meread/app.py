@@ -222,7 +222,8 @@ def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers
 
     @app.get('/api/books/{book_id}')
     def get_book(book_id: int):
-        return found(store.book(book_id), 'book')
+        book = found(store.book(book_id), 'book')
+        return {**book, 'emotions': pipeline.emotions(book_id)}
 
     @app.get('/api/books/{book_id}/chapters/{chapter}')
     def get_chapter(book_id: int, chapter: int):
@@ -273,6 +274,8 @@ def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers
             raise HTTPException(422, 'that character belongs to another book')
         if body.emotion not in (None, 'neutral') and store.segment(segment_id)['kind'] != 'speech':
             raise HTTPException(422, 'only spoken lines are said with an emotion')
+        if body.emotion is not None and body.emotion not in pipeline.emotions(book_id):
+            raise HTTPException(422, 'that delivery is not supported by this book and narrator')
         segment = store.correct_line(segment_id, body.character_id, body.emotion)
         announce(book_id, 'id = ?', (segment_id,))
         return segment
@@ -436,8 +439,8 @@ def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers
         character = take_of(character_id, emotion)
         if character['voice_state'] != 'ready':
             raise HTTPException(422, f"{character['name']} has no voice to take it from yet")
-        if store.one('SELECT language FROM book WHERE id = ?', (character['book_id'],))['language'] != 'en':
-            raise HTTPException(422, 'lines are read in an emotion only in English books')
+        if emotion not in pipeline.emotions(character['book_id']):
+            raise HTTPException(422, 'that delivery is not supported by this book and narrator')
         store.request_take(character_id, emotion)
         announce(character['book_id'], '0')
         return store.character(character_id)

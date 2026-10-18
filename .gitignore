@@ -5,6 +5,7 @@ node_modules/
 dist/
 *.tsbuildinfo
 .DS_Store
+/artifacts/spanish-emotions/
 
 # Keep the documentation even where a global ignore file skips docs/ folders.
 !docs/

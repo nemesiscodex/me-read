@@ -9,7 +9,8 @@ DIRECTIONS = {
             'I kept the letter for years, and I never had the courage to open it. Now there is nobody left to answer. '
             'The house is empty, and the garden has gone wild. I only wish I had told her, just once, how much she '
             'meant to me.'),
-    'angry': ('Speak with fury, loud, sharp and forceful.',
+    'angry': ('Speak with restrained anger, tense, clipped and bitter, at a normal speaking volume. '
+              'Keep the fury controlled rather than shouting.',
               'How dare you come back here after what you did? You lied to me, again and again, and I believed every '
               'word. No. Not this time. Get out of my house, and do not ever ask me for anything again!'),
     'scared': ('Speak in fear, trembling, breathless and urgent.',
@@ -26,5 +27,15 @@ DIRECTIONS = {
                 'HEEEY! OVER HERE! CAN YOU HEAR ME?! WE FOUND THE PATH! IT GOES AROUND THE LAKE! WAIT FOR US BY THE '
                 'OLD BRIDGE! WE WILL BE THERE BEFORE DARK! BRING THE ROPE! TELL THE OTHERS TO STAY WHERE THEY ARE! '
                 'OVER HERE!'),
+    'shouting': ('Shout a loud, urgent warning or command to someone nearby. Be clear, sharp and forceful, '
+                 'without anger or the drawn-out calls used to reach someone far away.',
+                 'WATCH OUT! STOP! DO NOT OPEN THAT DOOR! PUT THE BAG DOWN AND STEP BACK! '
+                 'EVERYONE OUT OF THE ROOM! LEAVE EVERYTHING HERE! GET BEHIND THE WALL! '
+                 'STAY THERE UNTIL I TELL YOU IT IS SAFE!'),
+    'angry_shouting': ('Shout the entire passage at the top of your lungs, furious and forceful. '
+                      'Use a loud, harsh, explosive voice. Every sentence is shouted, never calmly spoken.',
+                      'HOW DARE YOU COME BACK HERE! YOU LIED TO ME! I TOLD YOU TO STAY AWAY! '
+                      'GET OUT OF MY HOUSE! TAKE YOUR THINGS AND GO! I DO NOT WANT TO HEAR ANOTHER EXCUSE! '
+                      'DO NOT EVER COME BACK!'),
 }
 EMOTIONS = 'neutral', *DIRECTIONS

@@ -250,6 +250,12 @@ def test_breeze_rejects_spanish_before_reading_the_reference_or_loading_any_mode
     assert models.loads == models.snapshots == models.transcribed == models.spoken == []
 
 
+@pytest.mark.parametrize('provider', speech.PROVIDERS)
+def test_spanish_emotion_takes_are_only_offered_with_chatterbox(provider):
+    assert speech.PROVIDERS[provider].emotions('es') == (speech.EMOTIONS if provider == 'chatterbox' else ('neutral',))
+    assert speech.PROVIDERS[provider].emotions('en') == speech.EMOTIONS
+
+
 @pytest.mark.parametrize('provider', ['fish', 'breeze'])
 def test_replaced_reference_with_unchanged_path_and_mtime_gets_new_conditioning(tmp_path, models, provider):
     voice = recording(tmp_path / 'voice.wav')

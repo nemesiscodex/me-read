@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS voice_take (
   emotion TEXT NOT NULL {emotion_check(DIRECTIONS)},
   state TEXT NOT NULL DEFAULT 'none' CHECK (state IN ('none', 'queued', 'making', 'ready', 'failed')),
   rev INTEGER NOT NULL DEFAULT 0, made_from INTEGER, error TEXT, PRIMARY KEY (character_id, emotion));
+CREATE TABLE IF NOT EXISTS emotion_direction (emotion TEXT PRIMARY KEY, specification TEXT NOT NULL);
 """
 SEGMENT = 'id, block_id, seq, text, kind, character_id, emotion, audio_state, audio_rev, duration, error'
 CHARACTER = ('c.id, c.book_id, c.name, c.role, c.gender, c.age, c.pitch, c.description, c.voice_state, c.voice_rev, '
@@ -126,6 +127,7 @@ class Store:
                         added.add((table, column))
         self.db.executescript(SCHEMA)
         self._allow_new_emotions()
+        self._reconcile_directions()
         if ('moment', 'importance') in added:
             # Until now only the few best moments were kept. Pages are looked through again as they are read, for
             # every moment and how much each one matters.
@@ -163,6 +165,29 @@ class Store:
     def run(self, sql, args=()):
         with self.lock:
             return self.db.execute(sql, args)
+
+    def _reconcile_directions(self):
+        """A changed direction must replace its old takes and narration, even when the saved voice is unchanged."""
+        with self.lock:
+            self.db.execute('BEGIN IMMEDIATE')
+            try:
+                saved = {row['emotion']: row['specification'] for row in self.all('SELECT * FROM emotion_direction')}
+                for emotion, direction in DIRECTIONS.items():
+                    specification = json.dumps(direction, ensure_ascii=False)
+                    if saved.get(emotion) == specification:
+                        continue
+                    self.run("UPDATE voice_take SET state = 'none', rev = rev + 1, error = NULL WHERE emotion = ?", (emotion,))
+                    self.invalidate_audio('emotion = ?', (emotion,))
+                    self.run('INSERT INTO emotion_direction VALUES (?, ?) ON CONFLICT (emotion) '
+                             'DO UPDATE SET specification = excluded.specification', (emotion, specification))
+                if self.one('PRAGMA user_version')['user_version'] < 1:
+                    # Spanish emotion labels previously played neutral clips or used direct Fish prompts.
+                    self.invalidate_audio("book_id IN (SELECT id FROM book WHERE language = 'es') AND emotion != 'neutral'")
+                    self.run('PRAGMA user_version = 1')
+                self.db.execute('COMMIT')
+            except Exception:
+                self.db.execute('ROLLBACK')
+                raise
 
     def all(self, sql, args=()):
         with self.lock:

@@ -1,6 +1,6 @@
 # Narrators and voice models
 
-The narrator is the model that speaks every line in a character's voice. You choose it when you start me-read, with `--tts-provider`. Other models design the voices and make the emotion takes, whichever narrator you choose.
+The narrator is the model that speaks every line in a character's voice. You choose it when you start me-read, with `--tts-provider`. Other models design the voices and make emotion takes.
 
 ## Choose a narrator
 
@@ -28,6 +28,16 @@ Your cast, voices, emotion takes, tags, and reading position stay as they are. C
 Run one server per library. Two servers that share a library at the same time are not supported.
 
 The `provider` setting in the library's settings is a different thing. It picks Claude or Codex as the tagger.
+
+## Delivery
+
+Right-click a spoken line to choose how it is said. **Calling out** projects to someone far away. **Shouting** is a loud warning or command without anger. **Angry shouting** adds fury. **Angry (restrained)** keeps anger at a normal speaking volume.
+
+English books use Breeze emotion takes with every narrator. Spanish books use them with `--tts-provider chatterbox` (the default). Breeze receives the character's saved voice and performs an English emotion sample. Chatterbox uses that recording as the reference when reading Spanish lines. A take is reused for the character's lines in that emotion.
+
+The Cast panel lets you hear and remake those takes, including for Spanish characters. The previews are in English; the book's narration stays in Spanish. The quality of the emotional delivery and voice match depends on the source recording.
+
+The controls show only the deliveries supported by the selected narrator and book language. Fish reads Spanish from the character's normal voice without emotion takes. A changed direction invalidates its cached audio and takes, which the reader makes again as needed. When an older library first opens with Spanish emotion takes enabled, its cached Spanish lines with emotion labels are read again.
 
 ## Models
 

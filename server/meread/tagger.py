@@ -40,8 +40,11 @@ phrase, or plain narration that follows a dialogue tag (—Sí —dijo Ana. [[q2
 
 EMOTION is how the line is said: {', '.join(EMOTIONS)}. It is "neutral" unless the text shows how it is said: \
 a dialogue tag such as shouted, whispered or sobbed, an exclamation, or the scene. Use "whisper" for whispered or \
-murmured lines. Use "yelling" for a line shouted or called out to someone far away, and "angry" only when the speaker \
-is furious. A line whose speaker is "narrator" is "neutral".
+murmured lines. Use "yelling" only for calling out to someone far away. Use "shouting" for a loud warning, command \
+or announcement without anger. Use "angry_shouting" when the speaker shouts in fury. Use "angry" for restrained \
+anger at a normal or quiet speaking volume; anger alone does not imply shouting. These distinctions also apply to \
+Spanish dialogue: llamar a lo lejos, gritar una advertencia, gritar con ira, and hablar con ira contenida. \
+A line whose speaker is "narrator" is "neutral".
 
 Rules:
 - Use dialogue tags, turn-taking and context, and always pick the most likely speaker. A quoted thought belongs to \

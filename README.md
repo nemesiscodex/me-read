@@ -13,7 +13,7 @@ Drop in a book and press play. Claude or Codex works out who says each line and 
 
 - **A cast for every book.** The tagger finds each speaker, including unnamed ones such as "Guard 1", and describes how they sound. You can rename characters, merge two that are the same person, or add someone the tagger missed.
 - **A voice for every character.** Each character gets a 15-second voice designed from their description. If you don't like one, try another and listen before you keep it, or upload your own recording. Their lines are then read again in the new voice.
-- **Lines read with feeling.** In English books, a line can be happy, sad, angry, scared, whispered, or yelled. me-read makes a take of the character's voice in each emotion and reads the line from it.
+- **Lines read with feeling.** A line can be happy, sad, angry, scared, whispered, or shouted. Breeze makes an emotional take from the character's saved voice, then the narrator reads lines from that take. Spanish books use this approach with Chatterbox too. Calling out across a distance, shouting a warning, and angry shouting have separate controls.
 - **No waiting at page turns.** Audio is prepared for the page before, the page you are on, and the page after.
 - **Your place is kept.** Opening a book again continues at the exact line where you stopped.
 - **Media keys work.** Play, pause, next line, and previous line work from the keyboard, Control Center, and Bluetooth headsets.
@@ -80,7 +80,7 @@ Voice design and narration run on the Mac by default. If you also have a Linux m
 ## Limits
 
 - Books in English and Spanish. me-read detects the language at import. Dialogue can be in quotation marks (“…”, "…", «…», British ‘…’) or introduced by dashes (—Hola —dijo Ana—. ¿Vienes?).
-- Emotion takes are made for English books only. Other books read every line in the character's own voice.
+- Spanish emotions require `--tts-provider chatterbox` (the default). Breeze performs the emotion take in English; Chatterbox reads the book's Spanish lines from it. Delivery varies by voice; the Cast panel lets you hear and remake a take.
 - Formatting inside paragraphs, such as italics, links, and images, is dropped.
 - One reader at a time. The server prepares the pages of whichever book reported its position last.
 - Machine voices make mistakes. A character may sound wrong, and the tagger sometimes picks the wrong speaker. Both are quick to correct.
