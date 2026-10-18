@@ -1,5 +1,6 @@
 import asyncio
 import re
+import time
 import types
 
 import numpy as np
@@ -508,7 +509,7 @@ def test_provider_change_discards_a_clip_that_was_already_generating(world):
 @pytest.fixture
 def clock(monkeypatch):
     now = [1000.0]
-    monkeypatch.setattr(pipeline_module, 'time', types.SimpleNamespace(monotonic=lambda: now[0]))
+    monkeypatch.setattr(pipeline_module, 'time', types.SimpleNamespace(monotonic=lambda: now[0], time=time.time))
     return now
 
 
@@ -541,12 +542,49 @@ def test_a_candidate_the_speech_service_cannot_design_now_stays_queued_until_it_
     world.engine.design_error = speech.Unavailable('HTTP 503 loading')
     assert world.pipeline.speech_step()
     assert world.store.character(narrator)['draft_state'] == 'queued'
+    assert 'HTTP 503 loading' in world.store.character(narrator)['draft_status']
+    assert 'Retrying automatically' in world.store.character(narrator)['draft_status']
     designs = len(world.engine.designed)
     waits_for_the_speech_service(world, clock)
     assert len(world.engine.designed) == designs
     world.engine.design_error = None
     assert world.pipeline.speech_step()
     assert world.store.character(narrator)['draft_state'] == 'ready'
+    assert world.store.character(narrator)['draft_status'] is None
+
+
+def test_candidate_progress_and_failure_are_visible_without_changing_the_saved_voice(world):
+    focus(world, 0, 0, 0, 0)
+    world.drain()
+    narrator = world.store.narrator(world.book['id'])
+    voice = world.store.voice_path(narrator).read_bytes()
+    url = f"/api/characters/{narrator['id']}/voice/draft"
+    queued = world.client.post(url).json()
+    assert queued['draft_status'] == 'Waiting for the speech worker…'
+    assert queued['draft_updated_at'] is not None
+
+    def during_design():
+        detail = world.client.get(f"/api/books/{world.book['id']}").json()
+        candidate = next(c for c in detail['characters'] if c['id'] == narrator['id'])
+        assert candidate['draft_state'] == 'designing'
+        assert candidate['draft_status'] == 'Generating voice sample (attempt 1)…'
+        assert candidate['draft_updated_at'] >= queued['draft_updated_at']
+        published = [c for e in world.events if e['type'] == 'characters' for c in e['characters']]
+        assert any(c['draft_status'] == candidate['draft_status'] for c in published)
+
+    world.engine.during_design = during_design
+    world.engine.design_error = RuntimeError('The designed voice sample came out too short')
+    assert world.pipeline.speech_step()
+    failed = world.store.character(narrator['id'])
+    assert failed['draft_state'] == 'failed'
+    assert failed['draft_status'] == 'The designed voice sample came out too short'
+    assert failed['voice_state'] == 'ready'
+    assert world.store.voice_path(narrator).read_bytes() == voice
+    world.engine.during_design = world.engine.design_error = None
+    world.client.post(url)
+    assert world.pipeline.speech_step()
+    assert world.store.character(narrator['id'])['draft_status'] is None
+    assert world.client.delete(url).json()['draft_updated_at'] is None
 
 
 def test_a_candidate_discarded_while_the_speech_service_was_down_is_not_queued_again(world, clock):
@@ -558,11 +596,26 @@ def test_a_candidate_discarded_while_the_speech_service_was_down_is_not_queued_a
     world.engine.design_error = speech.Unavailable('down')
     assert world.pipeline.speech_step()
     assert world.store.character(narrator)['draft_state'] == 'none'
+    assert world.store.character(narrator)['draft_status'] is None
+    assert world.store.character(narrator)['draft_updated_at'] is None
     world.engine.during_design = world.engine.design_error = None
     clock[0] += 15
     designs = len(world.engine.designed)
     world.drain()
     assert len(world.engine.designed) == designs and world.store.character(narrator)['draft_state'] == 'none'
+
+
+@pytest.mark.parametrize('replacement', ['cancel', 'new_request'])
+def test_old_candidate_progress_cannot_overwrite_a_cancellation_or_new_request(world, replacement):
+    narrator = world.store.narrator(world.book['id'])
+    world.store.request_draft(narrator['id'])
+    change = world.store.discard_draft if replacement == 'cancel' else world.store.request_draft
+    world.engine.during_design = lambda: change(narrator['id'])
+    assert world.pipeline.speech_step()
+    after = world.store.character(narrator['id'])
+    assert after['draft_state'] == ('none' if replacement == 'cancel' else 'queued')
+    assert after['draft_status'] == (None if replacement == 'cancel' else 'Waiting for the speech worker…')
+    assert not world.store.draft_path(narrator).exists()
 
 
 def test_a_take_the_speech_service_cannot_make_now_is_queued_again_not_failed(world, clock):

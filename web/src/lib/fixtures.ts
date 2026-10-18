@@ -43,6 +43,8 @@ export function character(id: number, patch: Partial<Character> = {}): Character
     voice_rev: 1,
     draft_state: 'none',
     draft_rev: 0,
+    draft_status: null,
+    draft_updated_at: null,
     appearance: '',
     portrait_state: 'none',
     portrait_rev: 0,

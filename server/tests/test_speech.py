@@ -358,6 +358,17 @@ def test_one_breeze_model_designs_directs_and_narrates(tmp_path, models, provide
     assert models.loads.count(speech.BREEZE) == 1
 
 
+def test_design_reports_sample_generation_comparison_and_pitch_checks(tmp_path, models):
+    other = recording(tmp_path / 'other.wav')
+    engine = speech.Engine(tmp_path / 'hub', 'chatterbox')
+    stages = []
+    engine.design('A low voice.', 42, others=[other], ceiling=1000, progress=stages.append)
+    assert stages[0] == 'Generating voice sample (attempt 1)…'
+    assert 'Comparing with saved voice 1 of 1…' in stages
+    assert any(s.startswith('Checking candidate voice match (variation ') for s in stages)
+    assert stages[-1] == 'Checking voice pitch…'
+
+
 def test_a_male_voice_above_its_ceiling_is_designed_again_with_the_next_seed(tmp_path, models, monkeypatch):
     pitches = iter([300., 240., 190., 100.])
     monkeypatch.setattr(speech, 'median_pitch', lambda audio, rate: next(pitches))

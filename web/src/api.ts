@@ -43,6 +43,9 @@ export interface Character {
   /** A candidate voice sample being auditioned. The current voice stays in use until the candidate is approved. */
   draft_state: DraftState
   draft_rev: number
+  /** Current candidate step or failure reason, and the server time when it last changed (Unix seconds). */
+  draft_status: string | null
+  draft_updated_at: number | null
   /** How the character looks, in words. The portrait is drawn from it, and drawn again whenever it changes. */
   appearance: string
   portrait_state: DrawState

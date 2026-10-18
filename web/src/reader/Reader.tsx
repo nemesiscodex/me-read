@@ -529,6 +529,7 @@ export function Reader({ bookId, place }: { bookId: number; place: Place | null 
           characters={data.book.characters}
           settings={settings}
           emotions={emotions.length > 1}
+          speechActivity={speech}
           onClose={closeCast}
           onCharacter={(character) => dispatch({ type: 'characterSaved', character })}
           onMerged={(id, into) => dispatch({ type: 'characterMerged', id, into })}

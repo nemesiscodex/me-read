@@ -1099,6 +1099,36 @@
   animation: breathing 1.6s ease-in-out infinite;
 }
 
+.candidate-step {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+
+.candidate-spinner {
+  display: inline-block;
+  flex: 0 0 0.65rem;
+  width: 0.65rem;
+  height: 0.65rem;
+  border: 1px solid var(--rule);
+  border-top-color: var(--ink-soft);
+  border-radius: 50%;
+  animation: candidate-spin 0.9s linear infinite;
+}
+
+.candidate-progress .candidate-timing {
+  margin-top: 0.4rem;
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes candidate-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .candidate-spinner { animation: none; }
+}
+
 .candidate-actions {
   display: flex;
   flex-wrap: wrap;

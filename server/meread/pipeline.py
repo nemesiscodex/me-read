@@ -340,26 +340,40 @@ class Pipeline:
     def design_draft(self, character):
         """Design a candidate sample next to the current voice, for the reader to hear before approving."""
         rev, book_id = character['draft_rev'], character['book_id']
-        if not self.store.run("UPDATE character SET draft_state = 'designing' WHERE id = ? AND draft_rev = ? "
-                              "AND draft_state = 'queued'", (character['id'], rev)).rowcount:
+        if not self.store.run("UPDATE character SET draft_state = 'designing', draft_status = 'Starting voice design…', "
+                              "draft_updated_at = ? WHERE id = ? AND draft_rev = ? AND draft_state = 'queued'",
+                              (time.time(), character['id'], rev)).rowcount:
             return
         self._publish_cast(book_id)
         self._say('speech', f"Designing a candidate voice for {character['name']}")
+
+        def progress(message):
+            if self.store.run("UPDATE character SET draft_status = ?, draft_updated_at = ? "
+                              "WHERE id = ? AND draft_rev = ? AND draft_state = 'designing'",
+                              (message, time.time(), character['id'], rev)).rowcount:
+                log.info('Candidate voice %s revision %s: %s', character['id'], rev, message)
+                self._publish_cast(book_id)
+                self._say('speech', f"{character['name']}: {message}")
+
         try:
             audio, rate = self.engine.design(speech.voice_instruction(character), seed=character['id'] * 1000 + 500 + rev,
                                              language=self._language(book_id), others=self._other_voices(character),
-                                             ceiling=speech.pitch_ceiling(character))
+                                             ceiling=speech.pitch_ceiling(character), progress=progress)
+            progress('Saving the candidate sample…')
             self._land(lambda tmp: sf.write(tmp, audio, rate, format='WAV'), self.store.draft_path(character),
-                       lambda: self.store.run("UPDATE character SET draft_state = 'ready' WHERE id = ? AND draft_rev = ? "
-                                              "AND draft_state = 'designing'", (character['id'], rev)).rowcount)
+                       lambda: self.store.run("UPDATE character SET draft_state = 'ready', draft_status = NULL, draft_updated_at = ? "
+                                              "WHERE id = ? AND draft_rev = ? AND draft_state = 'designing'",
+                                              (time.time(), character['id'], rev)).rowcount)
         except speech.Unavailable as e:
             self._wait_for_speech(e, f"{character['name']}'s candidate voice")
-            self.store.run("UPDATE character SET draft_state = 'queued' WHERE id = ? AND draft_rev = ? "
-                           "AND draft_state = 'designing'", (character['id'], rev))
-        except Exception:
+            self.store.run("UPDATE character SET draft_state = 'queued', draft_status = ?, draft_updated_at = ? "
+                           "WHERE id = ? AND draft_rev = ? AND draft_state = 'designing'",
+                           (f'{e} Retrying automatically.', time.time(), character['id'], rev))
+        except Exception as e:
             log.exception('candidate voice failed for %s', character['name'])
-            self.store.run("UPDATE character SET draft_state = 'failed' WHERE id = ? AND draft_rev = ? "
-                           "AND draft_state = 'designing'", (character['id'], rev))
+            self.store.run("UPDATE character SET draft_state = 'failed', draft_status = ?, draft_updated_at = ? "
+                           "WHERE id = ? AND draft_rev = ? AND draft_state = 'designing'",
+                           (str(e)[:600], time.time(), character['id'], rev))
         self._publish_cast(book_id)
 
     def make_take(self, character, take):

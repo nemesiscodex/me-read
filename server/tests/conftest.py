@@ -55,7 +55,8 @@ class FakeEngine:
         self.directed, self.direct_error, self.ceilings = [], None, []
         self.design_error, self.during_design = None, None
 
-    def design(self, instruction, seed, language='en', others=(), ceiling=None):
+    def design(self, instruction, seed, language='en', others=(), ceiling=None, progress=lambda message: None):
+        progress('Generating voice sample (attempt 1)…')
         self.designed.append(instruction)
         self.ceilings.append(ceiling)
         self.others.append(list(others))

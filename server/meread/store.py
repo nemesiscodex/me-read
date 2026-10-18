@@ -3,6 +3,7 @@ import json
 import re
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 from . import epub, segment
@@ -41,7 +42,7 @@ CREATE TABLE IF NOT EXISTS character (
   voice_state TEXT NOT NULL DEFAULT 'none' CHECK (voice_state IN ('none', 'designing', 'ready', 'failed')),
   voice_rev INTEGER NOT NULL DEFAULT 0, error TEXT,
   draft_state TEXT NOT NULL DEFAULT 'none' CHECK (draft_state IN ('none', 'queued', 'designing', 'ready', 'failed')),
-  draft_rev INTEGER NOT NULL DEFAULT 0, appearance TEXT NOT NULL DEFAULT '',
+  draft_rev INTEGER NOT NULL DEFAULT 0, draft_status TEXT, draft_updated_at REAL, appearance TEXT NOT NULL DEFAULT '',
   portrait_state TEXT NOT NULL DEFAULT 'none' CHECK (portrait_state IN ('none', 'drawing', 'ready', 'failed')),
   portrait_rev INTEGER NOT NULL DEFAULT 0, portrait_error TEXT);
 CREATE TABLE IF NOT EXISTS usage (
@@ -79,7 +80,7 @@ CREATE TABLE IF NOT EXISTS emotion_direction (emotion TEXT PRIMARY KEY, specific
 """
 SEGMENT = 'id, block_id, seq, text, kind, character_id, emotion, audio_state, audio_rev, duration, error'
 CHARACTER = ('c.id, c.book_id, c.name, c.role, c.gender, c.age, c.pitch, c.description, c.voice_state, c.voice_rev, '
-             'c.error, c.draft_state, c.draft_rev, c.appearance, c.portrait_state, c.portrait_rev, c.portrait_error, (SELECT COUNT(*) FROM segment s WHERE s.character_id = c.id AND s.kind = \'speech\') AS line_count')
+             'c.error, c.draft_state, c.draft_rev, c.draft_status, c.draft_updated_at, c.appearance, c.portrait_state, c.portrait_rev, c.portrait_error, (SELECT COUNT(*) FROM segment s WHERE s.character_id = c.id AND s.kind = \'speech\') AS line_count')
 MOMENT = ('m.id, m.block_id, m.block_idx, m.kind, m.title, m.summary, m.scene, m.importance, m.image_state, m.image_rev, '
           'm.error, m.starred')
 # A take is made from one revision of the character's voice. Once the voice is replaced, the take counts as never made.
@@ -93,7 +94,8 @@ DEFAULT_SETTINGS = {'provider': 'claude', 'claude_model': 'claude-haiku-5-5', 'c
 # Columns added after the first release, for libraries created before them.
 ADDED_COLUMNS = {'book': {'language': "TEXT NOT NULL DEFAULT 'en'", 'position_seq': 'INTEGER NOT NULL DEFAULT 0'}, 'character': {
     'draft_state': "TEXT NOT NULL DEFAULT 'none' CHECK (draft_state IN ('none', 'queued', 'designing', 'ready', 'failed'))",
-    'draft_rev': 'INTEGER NOT NULL DEFAULT 0', 'appearance': "TEXT NOT NULL DEFAULT ''",
+    'draft_rev': 'INTEGER NOT NULL DEFAULT 0', 'draft_status': 'TEXT', 'draft_updated_at': 'REAL',
+    'appearance': "TEXT NOT NULL DEFAULT ''",
     'portrait_state': "TEXT NOT NULL DEFAULT 'none' CHECK (portrait_state IN ('none', 'drawing', 'ready', 'failed'))",
     'portrait_rev': 'INTEGER NOT NULL DEFAULT 0', 'portrait_error': 'TEXT'},
     'block': {'scene_state': "TEXT NOT NULL DEFAULT 'pending' CHECK (scene_state IN ('pending', 'scanning', 'done'))"},
@@ -136,7 +138,8 @@ class Store:
         self.run("UPDATE block SET tag_state = 'pending' WHERE tag_state = 'tagging'")
         self.run("UPDATE segment SET audio_state = 'none' WHERE audio_state = 'generating'")
         self.run("UPDATE character SET voice_state = 'none' WHERE voice_state = 'designing'")
-        self.run("UPDATE character SET draft_state = 'queued' WHERE draft_state = 'designing'")
+        self.run("UPDATE character SET draft_state = 'queued', draft_status = 'Interrupted by restart; waiting for the speech worker.', "
+                 "draft_updated_at = ? WHERE draft_state = 'designing'", (time.time(),))
         self.run("UPDATE block SET scene_state = 'pending' WHERE scene_state = 'scanning'")
         self.run("UPDATE character SET portrait_state = 'none' WHERE portrait_state = 'drawing'")
         self.run("UPDATE moment SET image_state = 'none' WHERE image_state = 'drawing'")
@@ -379,11 +382,13 @@ class Store:
 
     def request_draft(self, character_id):
         """Ask for a candidate voice sample. The current voice and its clips stay until the candidate is approved."""
-        self.run("UPDATE character SET draft_state = 'queued', draft_rev = draft_rev + 1 WHERE id = ?", (character_id,))
+        self.run("UPDATE character SET draft_state = 'queued', draft_rev = draft_rev + 1, "
+                 "draft_status = 'Waiting for the speech worker…', draft_updated_at = ? WHERE id = ?", (time.time(), character_id))
 
     def discard_draft(self, character_id):
         with self.lock:
-            self.run("UPDATE character SET draft_state = 'none', draft_rev = draft_rev + 1 WHERE id = ?", (character_id,))
+            self.run("UPDATE character SET draft_state = 'none', draft_rev = draft_rev + 1, "
+                     "draft_status = NULL, draft_updated_at = NULL WHERE id = ?", (character_id,))
             self.draft_path(self.character(character_id)).unlink(missing_ok=True)
 
     def approve_draft(self, character_id):
@@ -395,7 +400,8 @@ class Store:
                 return False
             draft.replace(self.voice_path(character))
             self.reset_voice(character_id)
-            self.run("UPDATE character SET voice_state = 'ready', draft_state = 'none' WHERE id = ?", (character_id,))
+            self.run("UPDATE character SET voice_state = 'ready', draft_state = 'none', "
+                     "draft_status = NULL, draft_updated_at = NULL WHERE id = ?", (character_id,))
             return True
 
     def reset_voice(self, character_id):

@@ -457,7 +457,7 @@ class Engine:
             self.breeze = load_model(self._snapshot(BREEZE))
         return self.breeze
 
-    def design(self, instruction, seed, language='en', others=(), ceiling=None):
+    def design(self, instruction, seed, language='en', others=(), ceiling=None, progress=lambda message: None):
         """A voice sample of about 15 seconds matching `instruction`, spoken in `language`, as (audio, rate). Breeze
         designs English voices and Qwen3 the others.
 
@@ -466,11 +466,14 @@ class Engine:
         above `ceiling` is designed again with the next seed, up to four tries, keeping the lowest.
         """
         def attempt(i):
+            progress(f'Generating voice sample (attempt {i + 1})…')
             audio, rate = self.raw.design(instruction, seed + i, language)
             audio = trim(audio, rate)[:SAMPLE_SECONDS * rate]
             if len(audio) < MIN_SAMPLE_SECONDS * rate:
                 raise RuntimeError('the designed voice sample came out too short')
-            audio = self._apart(audio, rate, [path for path in others if os.path.exists(path)], language)
+            audio = self._apart(audio, rate, [path for path in others if os.path.exists(path)], language, progress)
+            if ceiling is not None:
+                progress('Checking voice pitch…')
             return (audio, rate), (None if ceiling is None else median_pitch(audio, rate))
         return within_ceiling(DESIGN_TRIES, attempt, ceiling)
 
@@ -544,11 +547,12 @@ class Engine:
     def _gpu_speaker(self, audio, rate, language):
         return self.remote.speaker(wav_of(audio, rate), language)
 
-    def _apart(self, audio, rate, others, language):
+    def _apart(self, audio, rate, others, language, progress=lambda message: None):
         if not others:
             return audio
         known = []
-        for path in others:
+        for i, path in enumerate(others):
+            progress(f'Comparing with saved voice {i + 1} of {len(others)}…')
             wav = Path(path).read_bytes()
             key = (language == 'en', hashlib.sha256(wav).hexdigest())
 
@@ -558,8 +562,10 @@ class Engine:
             known.append(self._cached(self.speakers, key, prepare))
         # A shift up shortens the sample, and the cloning model needs a few seconds of it.
         shifts = [s for s in SHIFTS if len(audio) / 2 ** (s / 12) >= MIN_SAMPLE_SECONDS * rate]
-        shift = most_distinct(shifts, lambda s: float((np.array(known) @ self.raw.speaker(shifted(audio, s), rate,
-                                                                                          language)).max()))
+        def score(shift):
+            progress(f'Checking candidate voice match (variation {shifts.index(shift) + 1} of {len(shifts)})…')
+            return float((np.array(known) @ self.raw.speaker(shifted(audio, shift), rate, language)).max())
+        shift = most_distinct(shifts, score)
         return shifted(audio, shift)
 
     def _cached(self, cache, key, prepare):

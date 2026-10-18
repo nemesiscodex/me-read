@@ -11,8 +11,9 @@ interface Props {
   characters: Character[]
   /** Portraits and looks are shown once there is an image service, also while pictures are switched off. */
   settings: Settings | null
-  /** The book's lines are read in their emotions, which only English books are. */
+  /** This narrator supports emotion takes in the book's language. */
   emotions: boolean
+  speechActivity?: string | null
   onClose: () => void
   onCharacter: (character: Character) => void
   onMerged: (id: number, into: number) => void
@@ -49,7 +50,7 @@ function portraitNote(character: Character, drawing: boolean): string {
   }
 }
 
-export function CastPanel({ characters, settings, emotions, onClose, onCharacter, onMerged, onSample }: Props) {
+export function CastPanel({ characters, settings, emotions, speechActivity, onClose, onCharacter, onMerged, onSample }: Props) {
   const portraits = settings !== null && settings.image_url !== ''
   const [openId, setOpenId] = useState<number | null>(null)
   const [query, setQuery] = useState('')
@@ -189,6 +190,7 @@ export function CastPanel({ characters, settings, emotions, onClose, onCharacter
               <CharacterEditor
                 key={character.id}
                 character={character}
+                speechActivity={speechActivity ?? null}
                 others={characters.filter((c) => c.id !== character.id)}
                 onCharacter={onCharacter}
                 looks={portraits && character.role !== 'narrator' ? { drawing: illustrating(settings) } : null}
@@ -209,6 +211,7 @@ export function CastPanel({ characters, settings, emotions, onClose, onCharacter
 
 interface EditorProps {
   character: Character
+  speechActivity: string | null
   others: Character[]
   onCharacter: (character: Character) => void
   /** Null when this character has no portrait to show. `drawing` is false while pictures are switched off. */
@@ -218,7 +221,7 @@ interface EditorProps {
   onMerged: (into: number) => void
 }
 
-function CharacterEditor({ character, others, onCharacter, looks, candidatePlaying, onCandidate, onMerged }: EditorProps) {
+function CharacterEditor({ character, speechActivity, others, onCharacter, looks, candidatePlaying, onCandidate, onMerged }: EditorProps) {
   const [draft, setDraft] = useState<CharacterInput>(() => inputOf(character))
   const [mergeInto, setMergeInto] = useState<number | ''>('')
   const [busy, setBusy] = useState(false)
@@ -365,14 +368,16 @@ function CharacterEditor({ character, others, onCharacter, looks, candidatePlayi
               </div>
             </>
           ) : character.draft_state === 'failed' ? (
-            <p className="cast-error">The candidate voice could not be designed.</p>
+            <p className="cast-error" role="alert">The candidate voice could not be designed. {character.draft_status}</p>
           ) : (
-            <div className="candidate-actions">
-              <p className="candidate-note candidate-busy">Designing a candidate voice…</p>
-              <button className="quiet-button" disabled={busy} onClick={() => act(api.discardDraft)}>
-                Cancel
-              </button>
-            </div>
+            <>
+              <CandidateProgress character={character} speechActivity={speechActivity} />
+              <div className="candidate-actions">
+                <button className="quiet-button" disabled={busy} onClick={() => act(api.discardDraft)}>
+                  Cancel
+                </button>
+              </div>
+            </>
           )}
         </div>
       )}
@@ -430,6 +435,31 @@ function CharacterEditor({ character, others, onCharacter, looks, candidatePlayi
       )}
 
       {problem && <p className="cast-error">{problem}</p>}
+    </div>
+  )
+}
+
+function CandidateProgress({ character, speechActivity }: { character: Character; speechActivity: string | null }) {
+  const [now, setNow] = useState(Date.now)
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+  const elapsed = character.draft_updated_at === null ? null : Math.max(0, Math.floor(now / 1000 - character.draft_updated_at))
+  const waiting = character.draft_state === 'queued'
+  const status = character.draft_status ?? (waiting ? 'Waiting for the speech worker…' : 'Starting voice design…')
+  return (
+    <div className="candidate-progress">
+      <p className="candidate-note candidate-step" role="status">
+        <span className="candidate-spinner" aria-hidden="true" /> {status}
+      </p>
+      {waiting && speechActivity && <p className="candidate-note">Speech worker: {speechActivity}</p>}
+      {elapsed !== null && (
+        <p className="candidate-note candidate-timing">
+          Last progress {elapsed < 60 ? `${elapsed}s` : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`} ago.
+          {elapsed >= 60 && ' Still waiting for this step; completion has not been confirmed. You can cancel this candidate.'}
+        </p>
+      )}
     </div>
   )
 }
