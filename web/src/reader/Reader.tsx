@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type MouseEvent } from 'react'
-import { api, type Character, type ServerEvent, type Settings } from '../api'
+import { api, EMOTION_LABELS, type Character, type ServerEvent, type Settings } from '../api'
 import { IllustrationSwitch } from './IllustrationSwitch'
 import { TaggerSwitch } from './TaggerSwitch'
 import { Icon } from '../Icon'
@@ -86,7 +86,7 @@ export function Reader({ bookId, place }: { bookId: number; place: Place | null 
     () => new Map((data?.book.characters ?? []).map((c): [number, Character] => [c.id, c])),
     [data?.book.characters],
   )
-  const emotions = data?.book.language === 'en'
+  const emotions = data?.book.emotions ?? []
   const narratorId = useMemo(() => narratorOf(data?.book.characters ?? [])?.id ?? null, [data?.book.characters])
 
   const clipUrl = useCallback(
@@ -313,9 +313,9 @@ export function Reader({ bookId, place }: { bookId: number; place: Place | null 
       const voiced = character !== null && character.role !== 'narrator'
       if (status === 'ready' && !voiced) return null
       const speaker = character?.name ?? (isUntagged(segment) ? 'Speaker unknown' : 'Narration')
-      const emotion = shownEmotion(segment, emotions)
+      const emotion = shownEmotion(segment, emotions.includes(segment.emotion))
       return {
-        speaker: emotion ? `${speaker} · ${emotion}` : speaker,
+        speaker: emotion ? `${speaker} · ${EMOTION_LABELS[emotion]}` : speaker,
         hue: voiced ? characterHue(character.id) : null,
         note: status === 'failed' ? (segment.error ?? STATUS_NOTE.failed) : STATUS_NOTE[status],
         problem: status === 'failed' || status === 'tag-failed',
@@ -528,7 +528,7 @@ export function Reader({ bookId, place }: { bookId: number; place: Place | null 
         <CastPanel
           characters={data.book.characters}
           settings={settings}
-          emotions={emotions}
+          emotions={emotions.length > 1}
           onClose={closeCast}
           onCharacter={(character) => dispatch({ type: 'characterSaved', character })}
           onMerged={(id, into) => dispatch({ type: 'characterMerged', id, into })}

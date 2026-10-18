@@ -1,5 +1,9 @@
 import sqlite3
 
+import pytest
+
+from meread import speech
+from meread.emotions import DIRECTIONS
 from meread.store import Store
 from test_pipeline import CAST, focus
 
@@ -124,9 +128,10 @@ def test_a_library_from_before_yelling_lets_lines_and_takes_be_yelled(tmp_path):
     old.close()
     store = Store(tmp_path)
     assert store.segment(1)['emotion'] == 'angry'
-    assert store.correct_line(1, emotion='yelling')['emotion'] == 'yelling'
-    store.request_take(1, 'yelling')
-    assert store.take(1, 'yelling')['state'] == 'queued'
+    for emotion in ('yelling', 'shouting', 'angry_shouting'):
+        assert store.correct_line(1, emotion=emotion)['emotion'] == emotion
+        store.request_take(1, emotion)
+        assert store.take(1, emotion)['state'] == 'queued'
     assert store.one('PRAGMA integrity_check')['integrity_check'] == 'ok'
 
 
@@ -192,6 +197,7 @@ def test_making_a_take_again_rereads_only_the_lines_in_that_emotion(world):
 
 def test_a_spanish_book_reads_every_line_in_the_characters_own_voice(world):
     from conftest import SPANISH, make_epub
+    world.engine.provider = speech.PROVIDERS['fish']
     book = world.client.post('/api/books', files={'file': ('es.epub', make_epub((SPANISH,)), 'application/epub+zip')}).json()
     world.ask.answer = lambda prompt: {
         'new_characters': [{'ref': 'n1', 'name': 'Guardia 1', 'role': 'extra', 'gender': 'male', 'age': 'adult',
@@ -204,6 +210,10 @@ def test_a_spanish_book_reads_every_line_in_the_characters_own_voice(world):
     assert heard(world, '¿Quién anda ahí?') == f'{guard}.wav'
     assert world.store.one('SELECT emotion FROM segment WHERE book_id = ? AND character_id = ? LIMIT 1',
                            (book['id'], guard))['emotion'] == 'angry'
+    line = world.store.one("SELECT id FROM segment WHERE book_id = ? AND kind = 'speech' LIMIT 1", (book['id'],))
+    assert world.client.get(f"/api/books/{book['id']}").json()['emotions'] == ['neutral']
+    assert world.client.patch(f"/api/segments/{line['id']}", json={'emotion': 'angry'}).status_code == 422
+    assert world.client.post(f'/api/characters/{guard}/takes/angry').status_code == 422
 
 
 def test_merging_a_character_removes_its_takes(world):
@@ -224,7 +234,8 @@ def test_the_cast_shows_every_take_and_plays_the_ready_ones(world):
     world.drain()
     tom = next(c for c in world.client.get(f"/api/books/{world.book['id']}").json()['characters'] if c['name'] == 'Tom')
     assert [(t['emotion'], t['state']) for t in tom['takes']] == [
-        ('happy', 'none'), ('sad', 'none'), ('angry', 'ready'), ('scared', 'none'), ('whisper', 'none'), ('yelling', 'none')]
+        ('happy', 'none'), ('sad', 'none'), ('angry', 'ready'), ('scared', 'none'), ('whisper', 'none'), ('yelling', 'none'),
+        ('shouting', 'none'), ('angry_shouting', 'none')]
     url = f"/api/characters/{tom['id']}/takes"
     reply = world.client.get(f'{url}/angry/audio')
     assert reply.status_code == 200 and reply.content == world.store.take_path(tom, 'angry').read_bytes()
@@ -239,12 +250,82 @@ def test_the_cast_shows_every_take_and_plays_the_ready_ones(world):
         'a take nobody speaks in reads nothing again'
 
 
-def test_a_take_is_only_made_from_a_voice_of_an_english_book(world):
+def test_a_take_requires_a_ready_voice_and_is_available_for_spanish_chatterbox(world):
     from conftest import SPANISH, make_epub
     narrator = world.store.narrator(world.book['id'])
     assert world.client.post(f"/api/characters/{narrator['id']}/takes/happy").status_code == 422, 'no voice yet'
     book = world.client.post('/api/books', files={'file': ('es.epub', make_epub((SPANISH,)), 'application/epub+zip')}).json()
     narrador = world.store.narrator(book['id'])
     world.store.run("UPDATE character SET voice_state = 'ready' WHERE id = ?", (narrador['id'],))
-    assert world.client.post(f"/api/characters/{narrador['id']}/takes/happy").status_code == 422
-    assert world.store.take(narrador['id'], 'happy')['state'] == 'none'
+    assert world.client.post(f"/api/characters/{narrador['id']}/takes/happy").status_code == 200
+    assert world.store.take(narrador['id'], 'happy')['state'] == 'queued'
+
+
+@pytest.mark.parametrize('emotion', DIRECTIONS)
+def test_spanish_chatterbox_reads_from_one_reusable_breeze_take(world, emotion):
+    from conftest import SPANISH, make_epub
+    world.engine.provider = speech.PROVIDERS['chatterbox']
+    book = world.client.post('/api/books', files={'file': ('es.epub', make_epub((SPANISH,)), 'application/epub+zip')}).json()
+    detail = world.client.get(f"/api/books/{book['id']}").json()
+    assert detail['emotions'] == ['neutral', *DIRECTIONS]
+    world.ask.answer = lambda prompt: {
+        'new_characters': [{'ref': 'n1', 'name': 'Guardia 1', 'role': 'extra', 'gender': 'male', 'age': 'adult',
+                            'pitch': 'low', 'description': 'gruff sentry'}],
+        'lines': [{'q': i + 1, 'speaker': 'n1', 'emotion': emotion} for i in range(prompt.count('[[q'))]}
+    world.client.post(f"/api/books/{book['id']}/focus", json={'first': 0, 'last': 5, 'current_first': 0, 'current_last': 5})
+    world.drain()
+    guard = cast(world, book['id'])['Guardia 1']['id']
+    assert world.engine.directed == [(f'{guard}.wav', emotion)]
+    assert heard(world, '¿Quién anda ahí?') == f'{guard}.{emotion}.wav'
+    assert world.engine.languages == {'es'}
+    assert world.store.take(guard, emotion)['state'] == 'ready'
+    assert world.client.get(f'/api/characters/{guard}/takes/{emotion}/audio').status_code == 200
+    assert world.client.post(f'/api/characters/{guard}/takes/{emotion}').status_code == 200
+    world.drain()
+    assert world.engine.directed == [(f'{guard}.wav', emotion)] * 2
+    line = world.store.one("SELECT id FROM segment WHERE book_id = ? AND kind = 'speech' LIMIT 1", (book['id'],))
+    assert world.client.patch(f"/api/segments/{line['id']}", json={'emotion': 'whisper'}).status_code == 200
+    assert world.client.patch(f"/api/segments/{line['id']}", json={'emotion': 'neutral'}).status_code == 200
+
+
+def test_changed_direction_discards_only_affected_takes_and_audio_once(world, monkeypatch):
+    world.ask.answer = told([('n1', None), ('n2', 'angry'), ('n2', 'sad'), ('n3', None)])
+    focus(world)
+    world.drain()
+    tom = cast(world)['Tom']
+    voice = world.store.voice_path(tom).read_bytes()
+    unaffected = world.store.all("SELECT id, audio_rev, audio_state FROM segment WHERE emotion != 'angry' ORDER BY id")
+    instruction, script = DIRECTIONS['angry']
+    monkeypatch.setitem(DIRECTIONS, 'angry', (instruction + ' A different direction.', script))
+    reopened = Store(world.store.home)
+    assert reopened.take(tom['id'], 'angry')['state'] == 'none'
+    assert reopened.take(tom['id'], 'sad')['state'] == 'ready'
+    affected = reopened.one("SELECT id, audio_rev, audio_state FROM segment WHERE character_id = ? AND emotion = 'angry'", (tom['id'],))
+    assert affected['audio_state'] == 'none'
+    assert reopened.all("SELECT id, audio_rev, audio_state FROM segment WHERE emotion != 'angry' ORDER BY id") == unaffected
+    assert reopened.voice_path(tom).read_bytes() == voice
+    again = Store(world.store.home)
+    assert again.segment(affected['id'])['audio_rev'] == affected['audio_rev']
+
+
+def test_old_spanish_emotion_audio_is_refreshed_once_without_replacing_voices_or_english_clips(world):
+    from conftest import SPANISH, make_epub
+    world.ask.answer = told(FEELINGS)
+    focus(world)
+    world.drain()
+    english = world.store.all('SELECT id, audio_state, audio_rev FROM segment WHERE book_id = ?', (world.book['id'],))
+    book = world.client.post('/api/books', files={'file': ('es.epub', make_epub((SPANISH,)), 'application/epub+zip')}).json()
+    world.client.post(f"/api/books/{book['id']}/focus", json={'first': 0, 'last': 5, 'current_first': 0, 'current_last': 5})
+    world.drain()
+    voice = world.store.narrator(book['id'])
+    wav = world.store.voice_path(voice).read_bytes()
+    affected = world.store.one("SELECT id, audio_rev FROM segment WHERE book_id = ? AND emotion != 'neutral' LIMIT 1", (book['id'],))
+    neutral = world.store.all("SELECT id, audio_state, audio_rev FROM segment WHERE book_id = ? AND emotion = 'neutral'", (book['id'],))
+    world.store.run('PRAGMA user_version = 0')
+    reopened = Store(world.store.home)
+    changed = reopened.segment(affected['id'])
+    assert (changed['audio_state'], changed['audio_rev']) == ('none', affected['audio_rev'] + 1)
+    assert reopened.all('SELECT id, audio_state, audio_rev FROM segment WHERE book_id = ?', (world.book['id'],)) == english
+    assert reopened.all("SELECT id, audio_state, audio_rev FROM segment WHERE book_id = ? AND emotion = 'neutral'", (book['id'],)) == neutral
+    assert reopened.voice_path(voice).read_bytes() == wav
+    assert Store(world.store.home).segment(affected['id'])['audio_rev'] == changed['audio_rev']

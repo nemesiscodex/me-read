@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { api, type Character, type CharacterInput, type Settings, type Take, type TakeState, type VoiceState } from '../api'
+import { api, EMOTION_LABELS, type Character, type CharacterInput, type Settings, type Take, type TakeState, type VoiceState } from '../api'
 import { Icon } from '../Icon'
 import { changedFields, findCast, inputOf, sortCast } from '../lib/cast'
 import { illustrating } from '../lib/moments'
@@ -159,22 +159,22 @@ export function CastPanel({ characters, settings, emotions, onClose, onCharacter
                   const key = `take-${character.id}-${take.emotion}`
                   const making = take.state === 'queued' || take.state === 'making'
                   return (
-                    <li key={take.emotion} className="take" data-take={take.state} title={`${take.emotion}: ${TAKE_NOTE[take.state]}`}>
+                    <li key={take.emotion} className="take" data-take={take.state} title={`${EMOTION_LABELS[take.emotion]}: ${TAKE_NOTE[take.state]}`}>
                       <button
                         className="take-play"
                         disabled={take.state !== 'ready'}
                         onClick={() => toggleSample(key, api.takeUrl(character, take))}
-                        aria-label={`${sampleOf === key ? 'Stop' : 'Hear'} ${character.name}, ${take.emotion}`}
+                        aria-label={`${sampleOf === key ? 'Stop' : 'Hear'} ${character.name}, ${EMOTION_LABELS[take.emotion]}`}
                       >
                         {take.state === 'ready' && <Icon name={sampleOf === key ? 'pause' : 'play'} size={12} />}
-                        {take.emotion}
+                        {EMOTION_LABELS[take.emotion]}
                       </button>
                       {(making || take.state === 'failed') && <span className="take-note">{TAKE_NOTE[take.state]}</span>}
                       {!making && (
                         <button
                           className="take-make"
                           onClick={() => void makeTake(character, take)}
-                          aria-label={`${take.state === 'none' ? 'Make' : 'Make again'} ${character.name}, ${take.emotion}`}
+                          aria-label={`${take.state === 'none' ? 'Make' : 'Make again'} ${character.name}, ${EMOTION_LABELS[take.emotion]}`}
                         >
                           {take.state === 'none' ? 'Make' : 'Make again'}
                         </button>

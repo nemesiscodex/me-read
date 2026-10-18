@@ -266,8 +266,7 @@ class Pipeline:
             elif character['voice_state'] != 'ready':
                 self.design_voice(character)
             else:
-                # Breeze directs emotions in English only.
-                emotion = seg['emotion'] if self._language(book_id) == 'en' else 'neutral'
+                emotion = seg['emotion'] if seg['emotion'] in self.emotions(book_id) else 'neutral'
                 take = self.store.take(character['id'], emotion) if emotion != 'neutral' else None
                 if take and take['state'] in ('none', 'queued'):
                     self.make_take(character, take)
@@ -283,6 +282,9 @@ class Pipeline:
 
     def _language(self, book_id):
         return self.store.one('SELECT language FROM book WHERE id = ?', (book_id,))['language']
+
+    def emotions(self, book_id):
+        return getattr(self.engine, 'provider', speech.PROVIDERS['chatterbox']).emotions(self._language(book_id))
 
     def _land(self, write, target, claim):
         """Write a file next to `target` and move it into place only if `claim` still holds in the database."""

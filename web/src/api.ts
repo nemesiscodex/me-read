@@ -10,8 +10,12 @@ export type AudioState = 'none' | 'generating' | 'ready' | 'failed'
 export type DraftState = 'none' | 'queued' | 'designing' | 'ready' | 'failed'
 export type DrawState = 'none' | 'drawing' | 'ready' | 'failed'
 export type Provider = 'claude' | 'codex'
-export const EMOTIONS = ['neutral', 'happy', 'sad', 'angry', 'scared', 'whisper', 'yelling'] as const
+export const EMOTIONS = ['neutral', 'happy', 'sad', 'angry', 'scared', 'whisper', 'yelling', 'shouting', 'angry_shouting'] as const
 export type Emotion = (typeof EMOTIONS)[number]
+export const EMOTION_LABELS: Record<Emotion, string> = {
+  neutral: 'Normal', happy: 'Happy', sad: 'Sad', angry: 'Angry (restrained)', scared: 'Scared', whisper: 'Whisper',
+  yelling: 'Calling out', shouting: 'Shouting', angry_shouting: 'Angry shouting',
+}
 /** 'none' also for a take made from a voice the character no longer has; it is made again when a line needs it. */
 export type TakeState = 'none' | 'queued' | 'making' | 'ready' | 'failed'
 
@@ -120,6 +124,8 @@ export interface BookSummary {
 }
 
 export interface BookDetail extends BookSummary {
+  /** Delivery options supported by this book's language and the selected narrator. */
+  emotions: Emotion[]
   chapters: Chapter[]
   characters: Character[]
 }
@@ -235,7 +241,7 @@ export const api = {
   /** Make the candidate the character's voice. Their lines are read again in it. */
   approveDraft: (id: number) => request<Character>(`/api/characters/${id}/voice/draft/approve`, json('POST')),
   uploadVoice: (id: number, file: File) => request<Character>(`/api/characters/${id}/voice`, upload(file)),
-  /** Make the take now, or make it again. Lines already read in it are read again in the new take. English books only. */
+  /** Make the take now, or make it again. Lines already read in it are read again in the new take. */
   makeTake: (id: number, emotion: Take['emotion']) =>
     request<Character>(`/api/characters/${id}/takes/${emotion}`, json('POST')),
   /** Draw the portrait again with a new seed, and the pictures the character is in. */

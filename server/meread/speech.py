@@ -21,7 +21,7 @@ from typing import Callable, NamedTuple
 import numpy as np
 import soundfile as sf
 
-from .emotions import DIRECTIONS
+from .emotions import DIRECTIONS, EMOTIONS
 
 CHATTERBOX = 'mlx-community/chatterbox-turbo-8bit'
 TOKENIZER = 'mlx-community/S3TokenizerV2'
@@ -46,6 +46,11 @@ class Provider:
     # The model the GPU speech service narrates with, or None when only MLX on this Mac narrates.
     service: str | None = None
     retakes: int = 1
+
+    def emotions(self, language):
+        if language == 'en' or (language == 'es' and self.name == 'chatterbox'):
+            return EMOTIONS
+        return ('neutral',)
 
     @property
     def identity(self):
