@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
-import { isRunning, MEDIA_KEYS, mediaKeyEvent } from '../lib/mediaKeys'
+import { isRunning, MEDIA_KEYS, mediaKeyEvent, type MediaKey } from '../lib/mediaKeys'
 import type { PlayerEvent, PlayerState } from '../lib/player'
+import { useWakeLock } from './useWakeLock'
 
 export interface NowPlaying {
   title: string
@@ -27,24 +28,32 @@ export function useMediaKeys(
   useEffect(() => {
     if (!('mediaSession' in navigator)) return
     const session = navigator.mediaSession
+    const registered: MediaKey[] = []
     for (const key of MEDIA_KEYS) {
-      session.setActionHandler(key, () => {
-        const { state, dispatch, startFrom } = latest.current
-        const event = mediaKeyEvent(state, key, startFrom())
-        if (event) dispatch(event)
-      })
+      try {
+        session.setActionHandler(key, () => {
+          const { state, dispatch, startFrom } = latest.current
+          const event = mediaKeyEvent(state, key, startFrom())
+          if (event) dispatch(event)
+        })
+        registered.push(key)
+      } catch (error) {
+        if (!(error instanceof DOMException && error.name === 'NotSupportedError')) throw error
+      }
     }
     return () => {
-      for (const key of MEDIA_KEYS) session.setActionHandler(key, null)
+      for (const key of registered) session.setActionHandler(key, null)
       session.metadata = null
       session.playbackState = 'none'
     }
   }, [])
 
   const running = isRunning(state)
+  useWakeLock(running)
+  const playbackState = state.status === 'idle' ? 'none' : running ? 'playing' : 'paused'
   useEffect(() => {
-    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = running ? 'playing' : 'paused'
-  }, [running])
+    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = playbackState
+  }, [playbackState])
 
   const { title = '', artist = '', album = '' } = nowPlaying ?? {}
   useEffect(() => {

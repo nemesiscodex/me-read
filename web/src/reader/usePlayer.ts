@@ -36,6 +36,7 @@ export function usePlayer(
   const rateRef = useRef(rate)
   const pausesRef = useRef(pauses)
   const rest = useRef<number | undefined>(undefined)
+  const audio = useRef<HTMLAudioElement | null>(null)
   const current = useRef<LoadedClip | null>(null)
   const preloaded = useRef<{ url: string; el: HTMLAudioElement } | null>(null)
 
@@ -77,13 +78,10 @@ export function usePlayer(
         dispatch({ type: 'clipFailed', ...event })
         return
       }
-      const ready = preloaded.current
-      if (ready && ready.url === url) {
-        el = ready.el
-        preloaded.current = null
-      } else {
-        el = new Audio(url)
-      }
+      // Safari grants autoplay per element. Keep the one the user started across
+      // lines, buffering and chapter turns; the preload only warms the cache.
+      el = audio.current ??= new Audio()
+      el.src = url
       current.current = { ...event, el }
     }
 
@@ -126,7 +124,12 @@ export function usePlayer(
   useEffect(
     () => () => {
       window.clearTimeout(rest.current)
-      if (current.current) release(current.current.el)
+      if (audio.current) {
+        release(audio.current)
+        audio.current.removeAttribute('src')
+        audio.current.load()
+      }
+      audio.current = null
       current.current = null
       preloaded.current = null
     },
