@@ -79,3 +79,28 @@ it('lets the reader cancel a candidate that is waiting for progress', async () =
   await act(async () => cancel?.click())
   expect(discard).toHaveBeenCalledWith(98)
 })
+
+it('applies a saved voice from the editor and closes the picker after success', async () => {
+  const voice = { ...character(12), book_title: 'Another Book', book_author: 'A. Writer', language: 'en' }
+  vi.spyOn(api, 'listVoices').mockResolvedValue([voice])
+  const reuse = vi.spyOn(api, 'reuseVoice').mockResolvedValue(character(98, { voice_rev: 2 }))
+  await render(character(98))
+  await act(async () => [...host.querySelectorAll('button')].find(b => b.textContent === 'Reuse a voice…')?.click())
+  expect(host.querySelector('.voice-picker')).not.toBeNull()
+  expect(reuse).not.toHaveBeenCalled()
+  await act(async () => host.querySelector<HTMLButtonElement>('.saved-voice .button')?.click())
+  expect(reuse).toHaveBeenCalledWith(98, voice)
+  expect(host.querySelector('.voice-picker')).toBeNull()
+})
+
+it('keeps the picker available and reports a failed replacement', async () => {
+  const voice = { ...character(12), book_title: 'Another Book', book_author: 'A. Writer', language: 'en' }
+  vi.spyOn(api, 'listVoices').mockResolvedValue([voice])
+  vi.spyOn(api, 'reuseVoice').mockRejectedValue(new Error('That saved voice changed; reopen the voice list'))
+  await render(character(98))
+  await act(async () => [...host.querySelectorAll('button')].find(b => b.textContent === 'Reuse a voice…')?.click())
+  await act(async () => host.querySelector<HTMLButtonElement>('.saved-voice .button')?.click())
+  expect(host.querySelector('.voice-picker')).not.toBeNull()
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain('That saved voice changed')
+  expect(host.querySelector<HTMLButtonElement>('.saved-voice .button')?.disabled).toBe(false)
+})

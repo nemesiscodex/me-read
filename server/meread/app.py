@@ -88,6 +88,11 @@ class Merge(BaseModel):
     into: int
 
 
+class ReuseVoice(BaseModel):
+    source_id: int
+    source_rev: int = Field(ge=0)
+
+
 class Hub:
     """Fans events out to the browsers watching a book. Workers publish from their own threads."""
 
@@ -198,6 +203,10 @@ def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers
     @app.get('/api/books')
     def list_books():
         return store.books()
+
+    @app.get('/api/voices')
+    def list_voices():
+        return store.reusable_voices()
 
     @app.post('/api/books')
     def upload_book(file: UploadFile):
@@ -428,6 +437,17 @@ def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers
         if character['voice_state'] != 'ready' or not path.exists():
             raise HTTPException(404, 'this character has no voice yet')
         return FileResponse(path, media_type='audio/wav', headers={'Cache-Control': 'private, max-age=31536000, immutable'})
+
+    @app.post('/api/characters/{character_id}/voice/reuse')
+    def reuse_voice(character_id: int, body: ReuseVoice):
+        with store.lock:
+            character = character_of(character_id)
+            if body.source_id == character_id:
+                raise HTTPException(422, 'this character already uses that voice')
+            if not store.reuse_voice(character_id, body.source_id, body.source_rev):
+                raise HTTPException(409, 'that saved voice changed or is no longer available; reopen the voice list')
+        announce(character['book_id'], 'character_id = ?', (character_id,))
+        return store.character(character_id)
 
     def take_of(character_id, emotion):
         if emotion not in DIRECTIONS:

@@ -56,6 +56,12 @@ export interface Character {
   takes: Take[]
 }
 
+export type ReusableVoice = Pick<Character, 'id' | 'book_id' | 'name' | 'gender' | 'age' | 'pitch' | 'description' | 'voice_rev'> & {
+  book_title: string
+  book_author: string
+  language: string
+}
+
 /** A paragraph where the picture changes: a new one is shown, or with kind 'clear' the last one is taken down. */
 export interface Moment {
   id: number
@@ -244,6 +250,9 @@ export const api = {
   /** Make the candidate the character's voice. Their lines are read again in it. */
   approveDraft: (id: number) => request<Character>(`/api/characters/${id}/voice/draft/approve`, json('POST')),
   uploadVoice: (id: number, file: File) => request<Character>(`/api/characters/${id}/voice`, upload(file)),
+  listVoices: () => request<ReusableVoice[]>('/api/voices'),
+  reuseVoice: (id: number, voice: ReusableVoice) => request<Character>(`/api/characters/${id}/voice/reuse`,
+    json('POST', { source_id: voice.id, source_rev: voice.voice_rev })),
   /** Make the take now, or make it again. Lines already read in it are read again in the new take. */
   makeTake: (id: number, emotion: Take['emotion']) =>
     request<Character>(`/api/characters/${id}/takes/${emotion}`, json('POST')),
@@ -259,7 +268,7 @@ export const api = {
   getUsage: () => request<Usage>('/api/usage'),
 
   audioUrl: (segment: Segment) => `/api/segments/${segment.id}/audio?v=${segment.audio_rev}`,
-  voiceUrl: (character: Character) => `/api/characters/${character.id}/voice?v=${character.voice_rev}`,
+  voiceUrl: (character: Pick<Character, 'id' | 'voice_rev'>) => `/api/characters/${character.id}/voice?v=${character.voice_rev}`,
   takeUrl: (character: Character, take: Take) =>
     `/api/characters/${character.id}/takes/${take.emotion}/audio?v=${character.voice_rev}.${take.rev}`,
   draftUrl: (character: Character) => `/api/characters/${character.id}/voice/draft?v=${character.draft_rev}`,

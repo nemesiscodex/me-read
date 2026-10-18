@@ -1,7 +1,9 @@
 """SQLite storage. The database is the single source of truth for what is tagged, voiced and spoken."""
 import json
 import re
+import shutil
 import sqlite3
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -343,6 +345,15 @@ class Store:
     def characters(self, book_id):
         return self.characters_where('c.book_id = ?', (book_id,))
 
+    def reusable_voices(self):
+        with self.lock:
+            voices = self.all(
+                'SELECT c.id, c.book_id, c.name, c.gender, c.age, c.pitch, c.description, c.voice_rev, '
+                'b.title AS book_title, b.author AS book_author, b.language FROM character c '
+                "JOIN book b ON b.id = c.book_id WHERE c.voice_state = 'ready' "
+                'ORDER BY c.name COLLATE NOCASE, b.title COLLATE NOCASE, c.id')
+            return [voice for voice in voices if self.voice_path(voice).is_file()]
+
     def character(self, character_id):
         return next(iter(self.characters_where('c.id = ?', (character_id,))), None)
 
@@ -408,7 +419,29 @@ class Store:
         with self.lock:
             self.run("UPDATE character SET voice_state = 'none', voice_rev = voice_rev + 1, error = NULL WHERE id = ?",
                      (character_id,))
+            self.run("UPDATE voice_take SET state = 'none', rev = rev + 1, made_from = NULL, error = NULL "
+                     'WHERE character_id = ?', (character_id,))
             self.invalidate_audio('character_id = ?', (character_id,))
+
+    def reuse_voice(self, character_id, source_id, source_rev):
+        """Copy a saved voice independently of its book. Refuse a sample changed since it was offered."""
+        with self.lock:
+            character, source = self.character(character_id), self.character(source_id)
+            if source is None or source['voice_state'] != 'ready' or source['voice_rev'] != source_rev:
+                return False
+            path = self.voice_path(source)
+            if not path.is_file():
+                return False
+            target = self.voice_path(character)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=target.parent) as folder:
+                sample = Path(folder) / 'voice.wav'
+                shutil.copyfile(path, sample)
+                sample.replace(target)
+            self.discard_draft(character_id)
+            self.reset_voice(character_id)
+            self.run("UPDATE character SET voice_state = 'ready' WHERE id = ?", (character_id,))
+            return True
 
     def take(self, character_id, emotion):
         return next(t for t in self.character(character_id)['takes'] if t['emotion'] == emotion)

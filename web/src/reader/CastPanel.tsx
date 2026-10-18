@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { api, EMOTION_LABELS, type Character, type CharacterInput, type Settings, type Take, type TakeState, type VoiceState } from '../api'
+import { api, EMOTION_LABELS, type Character, type CharacterInput, type ReusableVoice, type Settings, type Take, type TakeState, type VoiceState } from '../api'
 import { Icon } from '../Icon'
 import { changedFields, findCast, inputOf, sortCast } from '../lib/cast'
 import { illustrating } from '../lib/moments'
 import { hueStyle } from './BlockView'
 import { CastSearch } from './CastSearch'
 import { CharacterFields } from './CharacterFields'
+import { VoicePicker } from './VoicePicker'
 
 interface Props {
   characters: Character[]
@@ -196,6 +197,9 @@ export function CastPanel({ characters, settings, emotions, speechActivity, onCl
                 looks={portraits && character.role !== 'narrator' ? { drawing: illustrating(settings) } : null}
                 candidatePlaying={sampleOf === `draft-${character.id}`}
                 onCandidate={() => toggleSample(`draft-${character.id}`, api.draftUrl(character))}
+                savedPlayingId={sampleOf?.startsWith('saved-') ? Number(sampleOf.slice(6)) : null}
+                onSavedSample={(voice) => toggleSample(`saved-${voice.id}`, api.voiceUrl(voice))}
+                onStopSample={stopSample}
                 onMerged={(into) => {
                   setOpenId(null)
                   onMerged(character.id, into)
@@ -218,13 +222,17 @@ interface EditorProps {
   looks: { drawing: boolean } | null
   candidatePlaying: boolean
   onCandidate: () => void
+  savedPlayingId: number | null
+  onSavedSample: (voice: ReusableVoice) => void
+  onStopSample: () => void
   onMerged: (into: number) => void
 }
 
-function CharacterEditor({ character, speechActivity, others, onCharacter, looks, candidatePlaying, onCandidate, onMerged }: EditorProps) {
+function CharacterEditor({ character, speechActivity, others, onCharacter, looks, candidatePlaying, onCandidate, savedPlayingId, onSavedSample, onStopSample, onMerged }: EditorProps) {
   const [draft, setDraft] = useState<CharacterInput>(() => inputOf(character))
   const [mergeInto, setMergeInto] = useState<number | ''>('')
   const [busy, setBusy] = useState(false)
+  const [choosingVoice, setChoosingVoice] = useState(false)
   const [problem, setProblem] = useState<string | null>(null)
   const [finding, setFinding] = useState<'no' | 'asked' | 'reading' | { failed: string }>('no')
   const fileInput = useRef<HTMLInputElement>(null)
@@ -383,6 +391,9 @@ function CharacterEditor({ character, speechActivity, others, onCharacter, looks
       )}
 
       <div className="cast-voice-actions">
+        <button className="quiet-button" disabled={busy} aria-expanded={choosingVoice} onClick={() => setChoosingVoice(true)}>
+          Reuse a voice…
+        </button>
         {(character.draft_state === 'none' || character.draft_state === 'failed') && (
           <button className="quiet-button" disabled={busy} onClick={() => act(api.requestDraft)}>
             Try a new voice
@@ -403,6 +414,20 @@ function CharacterEditor({ character, speechActivity, others, onCharacter, looks
           }}
         />
       </div>
+
+      {choosingVoice && (
+        <VoicePicker character={character} busy={busy} playingId={savedPlayingId} onListen={onSavedSample}
+          onClose={() => { onStopSample(); setChoosingVoice(false) }}
+          onUse={(voice) => void attempt(async () => {
+            const saved = await api.reuseVoice(character.id, voice)
+            onStopSample()
+            onCharacter(saved)
+            setChoosingVoice(false)
+          })}
+        />
+      )}
+
+      {problem && <p className="cast-error cast-error-inline" role="alert">{problem}</p>}
 
       {character.role !== 'narrator' && others.length > 0 && (
         <div className="cast-merge">
@@ -433,8 +458,6 @@ function CharacterEditor({ character, speechActivity, others, onCharacter, looks
           )}
         </div>
       )}
-
-      {problem && <p className="cast-error">{problem}</p>}
     </div>
   )
 }

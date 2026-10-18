@@ -851,7 +851,7 @@
   z-index: 20;
   inset: 0 0 0 auto;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   width: min(25rem, 100vw);
   border-left: 1px solid var(--rule);
   background: var(--paper-raised);
@@ -881,6 +881,33 @@
 
 .cast-search-row {
   padding: 0 1.25rem 0.5rem;
+}
+
+.voice-picker-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.voice-picker-heading h3 {
+  font-family: var(--serif);
+  font-size: 1.15rem;
+  font-weight: 500;
+}
+
+.saved-voice-list {
+  max-height: 22rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.saved-voice {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.75rem 0;
+  border-top: 1px solid var(--rule);
+  overflow-wrap: anywhere;
 }
 
 .cast-list {
