@@ -26,6 +26,8 @@ SCENE_BATCH = 30
 SCENE_RETRY = 60
 IMAGE_RETRY = 15
 SPEECH_RETRY = 15
+# Earlier clips leveled per step, about 0.15 s of work, so a new clip to make waits no longer than that.
+LEVEL_BATCH = 20
 CONTEXT_BLOCKS = 8
 MAX_FOCUS = 400
 SILENCE = 0.6, 24000
@@ -219,7 +221,11 @@ class Pipeline:
     # Voices and clips
 
     def speech_step(self):
-        """Generate the next missing clip in focus, designing its voice or making its take first when needed."""
+        """Generate the next missing clip in focus, designing its voice or making its take first when needed. With
+        nothing to make, level a few of the clips made before clips were leveled."""
+        return self._speak_next() or self.level_step()
+
+    def _speak_next(self):
         if time.monotonic() < self.retry_at.get('speech', 0):
             return False
         draft = self.store.one("SELECT id FROM character WHERE draft_state = 'queued' ORDER BY id LIMIT 1")
@@ -279,6 +285,34 @@ class Pipeline:
             self.design_voice(self.store.character(waiting['id']))
             return True
         return False
+
+    def level_step(self):
+        """Bring the next few clips made before clips were leveled to the level new clips have. Returns False when
+        none is left."""
+        clips = self.store.all("SELECT id, book_id, audio_rev FROM segment WHERE audio_state = 'ready' AND leveled = 0 "
+                               'ORDER BY id LIMIT ?', (LEVEL_BATCH,))
+        if not clips:
+            return False
+        self._say('speech', 'Evening out the volume of earlier clips')
+        for clip in clips:
+            self._level(clip)
+        return True
+
+    def _level(self, clip):
+        path = self.store.audio_path(clip['book_id'], clip['id'])
+
+        def mark():
+            # A clip read again since it was looked up keeps its new file.
+            return self.store.run("UPDATE segment SET leveled = 1 WHERE id = ? AND audio_rev = ? AND audio_state = 'ready' "
+                                  'AND leveled = 0', (clip['id'], clip['audio_rev'])).rowcount
+        try:
+            audio, rate = sf.read(path, dtype='float32')
+        except Exception as e:
+            # Marked anyway, so that one unreadable clip does not hold up the others.
+            log.warning('could not level the clip of segment %s: %s', clip['id'], e)
+            mark()
+            return
+        self._land(lambda tmp: sf.write(tmp, speech.leveled(audio, rate), rate, format='FLAC', subtype='PCM_16'), path, mark)
 
     def _language(self, book_id):
         return self.store.one('SELECT language FROM book WHERE id = ?', (book_id,))['language']
@@ -426,8 +460,9 @@ class Pipeline:
             duration = len(audio) / rate
             self._land(lambda tmp: sf.write(tmp, audio, rate, format='FLAC', subtype='PCM_16'),
                        self.store.audio_path(book_id, seg['id']),
-                       lambda: self.store.run("UPDATE segment SET audio_state = 'ready', duration = ? WHERE id = ? "
-                                              "AND audio_rev = ? AND audio_state = 'generating'", (duration, *claim)).rowcount)
+                       lambda: self.store.run("UPDATE segment SET audio_state = 'ready', duration = ?, leveled = 1 "
+                                              "WHERE id = ? AND audio_rev = ? AND audio_state = 'generating'",
+                                              (duration, *claim)).rowcount)
         except speech.Unavailable as e:
             self._wait_for_speech(e, f"segment {seg['id']}")
             self.store.run("UPDATE segment SET audio_state = 'none' WHERE id = ? AND audio_rev = ? "

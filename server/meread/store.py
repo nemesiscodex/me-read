@@ -21,6 +21,8 @@ def emotion_check(emotions):
 
 EMOTION = f"TEXT NOT NULL DEFAULT 'neutral' {emotion_check(EMOTIONS)}"
 SEMITONES = 'INTEGER NOT NULL DEFAULT 0 CHECK (semitones BETWEEN -12 AND 12)'
+# Whether the clip on disk was brought to the speech level all clips share. Clips made before that are leveled later.
+LEVELED = 'INTEGER NOT NULL DEFAULT 0'
 SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS generation_identity (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1), identity TEXT NOT NULL);
@@ -59,8 +61,9 @@ CREATE TABLE IF NOT EXISTS segment (
   text TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('narration', 'speech')),
   character_id INTEGER REFERENCES character(id),
   audio_state TEXT NOT NULL DEFAULT 'none' CHECK (audio_state IN ('none', 'generating', 'ready', 'failed')),
-  audio_rev INTEGER NOT NULL DEFAULT 0, duration REAL, error TEXT, emotion {EMOTION});
+  audio_rev INTEGER NOT NULL DEFAULT 0, duration REAL, error TEXT, emotion {EMOTION}, leveled {LEVELED});
 CREATE INDEX IF NOT EXISTS segment_order ON segment (book_id, block_idx, seq);
+CREATE INDEX IF NOT EXISTS segment_unleveled ON segment (id) WHERE audio_state = 'ready' AND leveled = 0;
 CREATE INDEX IF NOT EXISTS segment_character ON segment (character_id);
 CREATE TABLE IF NOT EXISTS moment (
   id INTEGER PRIMARY KEY, book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
@@ -83,7 +86,7 @@ CREATE TABLE IF NOT EXISTS voice_take (
   rev INTEGER NOT NULL DEFAULT 0, made_from INTEGER, error TEXT, semitones {SEMITONES}, PRIMARY KEY (character_id, emotion));
 CREATE TABLE IF NOT EXISTS emotion_direction (emotion TEXT PRIMARY KEY, specification TEXT NOT NULL);
 """
-SEGMENT = 'id, block_id, seq, text, kind, character_id, emotion, audio_state, audio_rev, duration, error'
+SEGMENT = 'id, block_id, seq, text, kind, character_id, emotion, audio_state, audio_rev, duration, error, leveled'
 CHARACTER = ('c.id, c.book_id, c.name, c.role, c.gender, c.age, c.pitch, c.description, c.voice_state, c.voice_rev, '
              'c.error, c.draft_state, c.draft_rev, c.draft_status, c.draft_updated_at, c.appearance, c.portrait_state, c.portrait_rev, c.portrait_error, (SELECT COUNT(*) FROM segment s WHERE s.character_id = c.id AND s.kind = \'speech\') AS line_count')
 MOMENT = ('m.id, m.block_id, m.block_idx, m.kind, m.title, m.summary, m.scene, m.importance, m.image_state, m.image_rev, '
@@ -107,7 +110,7 @@ ADDED_COLUMNS = {'book': {'language': "TEXT NOT NULL DEFAULT 'en'", 'position_se
     'moment': {'wanted': 'INTEGER NOT NULL DEFAULT 0', 'starred': 'INTEGER NOT NULL DEFAULT 0',
                'title': "TEXT NOT NULL DEFAULT ''", 'summary': "TEXT NOT NULL DEFAULT ''",
                'importance': 'INTEGER NOT NULL DEFAULT 5'},
-    'segment': {'emotion': EMOTION}, 'voice_take': {'semitones': SEMITONES}}
+    'segment': {'emotion': EMOTION, 'leveled': LEVELED}, 'voice_take': {'semitones': SEMITONES}}
 
 
 def illustrating(settings):

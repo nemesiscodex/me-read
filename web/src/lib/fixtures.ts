@@ -11,6 +11,7 @@ export function segment(id: number, patch: Partial<Segment> = {}): Segment {
     emotion: 'neutral',
     audio_state: 'ready',
     audio_rev: 1,
+    leveled: 1,
     duration: 1,
     error: null,
     ...patch,

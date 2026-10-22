@@ -101,6 +101,8 @@ export interface Segment {
   emotion: Emotion
   audio_state: AudioState
   audio_rev: number
+  /** 1 once the clip on disk is at the level all clips share; leveling an old clip changes its file, not its rev. */
+  leveled: number
   duration: number | null
   error: string | null
 }
@@ -275,7 +277,7 @@ export const api = {
   updateSettings: (settings: Partial<Settings>) => request<Settings>('/api/settings', json('PUT', settings)),
   getUsage: () => request<Usage>('/api/usage'),
 
-  audioUrl: (segment: Segment) => `/api/segments/${segment.id}/audio?v=${segment.audio_rev}`,
+  audioUrl: (segment: Segment) => `/api/segments/${segment.id}/audio?v=${segment.audio_rev}.${segment.leveled}`,
   voiceUrl: (character: Pick<Character, 'id' | 'voice_rev'>) => `/api/characters/${character.id}/voice?v=${character.voice_rev}`,
   takeUrl: (character: Character, take: Take) =>
     `/api/characters/${character.id}/takes/${take.emotion}/audio?v=${character.voice_rev}.${take.rev}`,

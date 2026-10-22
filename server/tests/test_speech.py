@@ -424,7 +424,7 @@ def test_a_line_is_cloned_from_the_take_shifted_and_its_clip_is_shifted_back(tmp
 
     plain, _ = engine.speak('Stop right there!', take, 42)
     assert references[2] == take.read_bytes()
-    np.testing.assert_array_equal(plain, made)
+    np.testing.assert_array_equal(plain, speech.leveled(made, 24000))
     assert sorted(p.name for p in tmp_path.iterdir()) == ['hub', 'take.wav']
 
 

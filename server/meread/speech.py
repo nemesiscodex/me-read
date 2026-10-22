@@ -123,6 +123,12 @@ SAME_VOICE = 0.85
 # them a woman's voice, which sits above 220 Hz.
 MALE_CEILING = {'low': 160, 'medium': 210, 'high': 250}
 DESIGN_TRIES = 4
+# The level, in dB of `loudness`, every clip's speech is brought to. On a real library it keeps the narrator where the
+# models put them, about -26.4 LUFS, so narration barely changes and the other voices move to it.
+TARGET = -24.8
+# Frames quieter than FLOOR dBFS are silence; frames more than GATE dB under the loudest are pauses and breaths.
+FRAME, FLOOR, GATE = 0.05, -60, 25
+PEAK, BOOST = -1, 12
 
 
 def voice_instruction(character):
@@ -198,6 +204,35 @@ def trim(audio, rate, threshold=0.01, before=0.03, after=0.12):
     if not len(loud):
         return audio
     return audio[max(0, loud[0] - int(before * rate)):loud[-1] + 1 + int(after * rate)]
+
+
+def loudness(audio, rate):
+    """How loud the speech in `audio` is, in dB, or None when nothing in it is louder than silence."""
+    # Padded to a power of two: the FFT of some lengths is ten times slower.
+    padded = 1 << (len(audio) - 1).bit_length()
+    hz = np.fft.rfftfreq(padded, 1 / rate)
+    above = (hz / 1500) ** 2
+    # Without DC and 4 dB up above 1.5 kHz, close to a loudness meter's weighting: the ear hears a bright voice as louder.
+    weighted = np.fft.irfft(np.fft.rfft(audio - audio.mean(), padded) * np.sqrt((1 + 10 ** 0.4 * above) / (1 + above)),
+                            padded)[:len(audio)]
+    size = int(FRAME * rate)
+    frames = weighted[:len(weighted) // size * size].reshape(-1, size) if len(weighted) >= size else weighted[None]
+    power = (frames ** 2).mean(axis=1)
+    level = 10 * np.log10(power + 1e-20)
+    live = level > FLOOR
+    if not live.any():
+        return None
+    return float(10 * np.log10(power[live & (level > np.percentile(level[live], 95) - GATE)].mean()))
+
+
+def leveled(audio, rate):
+    """`audio` with one gain that brings its speech to TARGET, short of a peak above PEAK dBFS or a boost above BOOST dB.
+    Silence comes back as it is."""
+    level = loudness(audio, rate)
+    if level is None:
+        return audio
+    gain = min(TARGET - level, BOOST, PEAK - 20 * np.log10(np.abs(audio).max()))
+    return (audio * 10 ** (gain / 20)).astype('float32')
 
 
 def read_sample(path):
@@ -714,7 +749,7 @@ class Engine:
         return self._cached(self.moved, (hashlib.sha256(wav).hexdigest(), semitones), move)
 
     def speak(self, text, voice_path, seed, language='en', semitones=0):
-        """`text` spoken in the saved sample's voice, as mono float32 samples and their actual rate.
+        """`text` spoken in the saved sample's voice at the level all clips share, as mono float32 samples and their actual rate.
 
         With `semitones`, the model clones the sample shifted by that many and each clip is shifted back. A model that
         clones a very high take speaks it in two voices at once; cloning it lower and raising the clip avoids that.
@@ -732,4 +767,4 @@ class Engine:
                 audio = trim(shifted(audio, -semitones), rate)
                 if len(audio) / rate <= 2.5 + words * 0.9:
                     break
-        return audio, rate
+        return leveled(audio, rate), rate
