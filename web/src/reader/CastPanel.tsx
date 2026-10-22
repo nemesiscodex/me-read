@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { api, EMOTION_LABELS, type Character, type CharacterInput, type ReusableVoice, type Settings, type Take, type TakeState, type VoiceState } from '../api'
+import { api, EMOTION_LABELS, type Character, type CharacterInput, type ReusableVoice, type Settings, type TakeState, type VoiceState } from '../api'
 import { Icon } from '../Icon'
 import { changedFields, findCast, inputOf, sortCast } from '../lib/cast'
 import { illustrating } from '../lib/moments'
@@ -36,6 +36,8 @@ const TAKE_NOTE: Record<TakeState, string> = {
   ready: 'ready',
   failed: 'could not be made',
 }
+
+const TAKE_SHIFTS = Array.from({ length: 13 }, (_, i) => i - 6)
 
 function portraitNote(character: Character, drawing: boolean): string {
   if (character.appearance === '') return 'No portrait yet. It is drawn from the appearance.'
@@ -89,11 +91,11 @@ export function CastPanel({ characters, settings, emotions, speechActivity, onCl
     el.play().catch(stopSample)
   }
 
-  const makeTake = async (character: Character, take: Take) => {
+  const changeTake = async (character: Character, change: () => Promise<Character>) => {
     setTakeProblem(null)
     try {
       // A take can be made before this answer arrives, so the cast is left to the event stream.
-      await api.makeTake(character.id, take.emotion)
+      await change()
     } catch (error) {
       setTakeProblem({ id: character.id, text: error instanceof Error ? error.message : String(error) })
     }
@@ -172,10 +174,25 @@ export function CastPanel({ characters, settings, emotions, speechActivity, onCl
                         {EMOTION_LABELS[take.emotion]}
                       </button>
                       {(making || take.state === 'failed') && <span className="take-note">{TAKE_NOTE[take.state]}</span>}
+                      <select
+                        className="take-shift"
+                        value={take.semitones}
+                        data-shifted={take.semitones !== 0 || undefined}
+                        onChange={(event) => {
+                          const semitones = Number(event.target.value)
+                          void changeTake(character, () => api.setTakeSemitones(character.id, take.emotion, semitones))
+                        }}
+                        aria-label={`Semitones for ${character.name}, ${EMOTION_LABELS[take.emotion]}`}
+                        title="Speak this emotion this many semitones lower (or higher), then shift it back. Lower a take whose lines come out as two voices."
+                      >
+                        {TAKE_SHIFTS.map((n) => (
+                          <option key={n} value={n}>{n > 0 ? `+${n}` : n}</option>
+                        ))}
+                      </select>
                       {!making && (
                         <button
                           className="take-make"
-                          onClick={() => void makeTake(character, take)}
+                          onClick={() => void changeTake(character, () => api.makeTake(character.id, take.emotion))}
                           aria-label={`${take.state === 'none' ? 'Make' : 'Make again'} ${character.name}, ${EMOTION_LABELS[take.emotion]}`}
                         >
                           {take.state === 'none' ? 'Make' : 'Make again'}
@@ -233,6 +250,7 @@ function CharacterEditor({ character, speechActivity, others, onCharacter, looks
   const [mergeInto, setMergeInto] = useState<number | ''>('')
   const [busy, setBusy] = useState(false)
   const [choosingVoice, setChoosingVoice] = useState(false)
+  const [semitones, setSemitones] = useState(0)
   const [problem, setProblem] = useState<string | null>(null)
   const [finding, setFinding] = useState<'no' | 'asked' | 'reading' | { failed: string }>('no')
   const fileInput = useRef<HTMLInputElement>(null)
@@ -414,6 +432,25 @@ function CharacterEditor({ character, speechActivity, others, onCharacter, looks
           }}
         />
       </div>
+
+      {character.voice_state === 'ready' && (
+        <div className="voice-shift" role="group" aria-label="Move the voice up or down">
+          <span>Pitch</span>
+          <button className="quiet-button" disabled={semitones <= -12} aria-label="One semitone lower"
+            onClick={() => setSemitones(semitones - 1)}>
+            −
+          </button>
+          <output aria-label="Semitones">{semitones > 0 ? `+${semitones}` : semitones}</output>
+          <button className="quiet-button" disabled={semitones >= 12} aria-label="One semitone higher"
+            onClick={() => setSemitones(semitones + 1)}>
+            +
+          </button>
+          <button className="quiet-button" disabled={busy || semitones === 0}
+            onClick={() => act((id) => api.shiftVoice(id, semitones))}>
+            Make candidate
+          </button>
+        </div>
+      )}
 
       {choosingVoice && (
         <VoicePicker character={character} busy={busy} playingId={savedPlayingId} onListen={onSavedSample}

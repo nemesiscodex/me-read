@@ -415,11 +415,12 @@ class Pipeline:
         self._publish_segments(book_id, 'id = ?', (seg['id'],))
         self._say('speech', f"Reading as {character['name']}" + ('' if emotion == 'neutral' else f', {emotion}'))
         voice = self.store.voice_path(character) if emotion == 'neutral' else self.store.take_path(character, emotion)
+        semitones = 0 if emotion == 'neutral' else self.store.take(character['id'], emotion)['semitones']
         try:
             text = speakable(seg['text'])
             if text:
                 audio, rate = self.engine.speak(text, voice, seed=seg['audio_rev'] * 1000 + 42,
-                                                language=self._language(book_id))
+                                                language=self._language(book_id), semitones=semitones)
             else:
                 audio, rate = np.zeros(int(SILENCE[0] * SILENCE[1]), dtype='float32'), SILENCE[1]
             duration = len(audio) / rate

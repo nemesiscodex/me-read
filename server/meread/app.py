@@ -93,6 +93,19 @@ class ReuseVoice(BaseModel):
     source_rev: int = Field(ge=0)
 
 
+class Semitones(BaseModel):
+    semitones: int = Field(strict=True, ge=-12, le=12)
+
+
+class Shift(Semitones):
+    @field_validator('semitones')
+    @classmethod
+    def moves(cls, value):
+        if value == 0:
+            raise ValueError('choose a shift other than 0')
+        return value
+
+
 class Hub:
     """Fans events out to the browsers watching a book. Workers publish from their own threads."""
 
@@ -387,6 +400,14 @@ def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers
         announce(book_id, '0')
         return store.character(character_id)
 
+    @app.post('/api/characters/{character_id}/voice/shift')
+    def shift_voice(character_id: int, body: Shift):
+        character = character_of(character_id)
+        if not store.shift_draft(character_id, body.semitones):
+            raise HTTPException(422, f"{character['name']} has no voice to shift yet")
+        announce(character['book_id'], '0')
+        return store.character(character_id)
+
     @app.delete('/api/characters/{character_id}/voice/draft')
     def discard_draft(character_id: int):
         book_id = character_of(character_id)['book_id']
@@ -463,6 +484,15 @@ def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers
             raise HTTPException(422, 'that delivery is not supported by this book and narrator')
         store.request_take(character_id, emotion)
         announce(character['book_id'], '0')
+        return store.character(character_id)
+
+    @app.put('/api/characters/{character_id}/takes/{emotion}/semitones')
+    def shift_take(character_id: int, emotion: str, body: Semitones):
+        character = take_of(character_id, emotion)
+        if emotion not in pipeline.emotions(character['book_id']):
+            raise HTTPException(422, 'that delivery is not supported by this book and narrator')
+        if store.shift_take(character_id, emotion, body.semitones):
+            announce(character['book_id'], "character_id = ? AND emotion = ? AND kind = 'speech'", (character_id, emotion))
         return store.character(character_id)
 
     @app.get('/api/characters/{character_id}/takes/{emotion}/audio')

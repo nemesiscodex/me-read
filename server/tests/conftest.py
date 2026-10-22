@@ -52,7 +52,7 @@ class FakeEngine:
 
     def __init__(self):
         self.designed, self.others, self.spoken, self.during_speak, self.languages = [], [], [], None, set()
-        self.directed, self.direct_error, self.ceilings = [], None, []
+        self.directed, self.direct_error, self.ceilings, self.semitones = [], None, [], {}
         self.design_error, self.during_design = None, None
 
     def design(self, instruction, seed, language='en', others=(), ceiling=None, progress=lambda message: None):
@@ -73,8 +73,9 @@ class FakeEngine:
             raise self.direct_error
         return np.full(24000 * 7, 0.2, dtype='float32'), 24000
 
-    def speak(self, text, voice_path, seed, language='en'):
+    def speak(self, text, voice_path, seed, language='en', semitones=0):
         self.languages.add(language)
+        self.semitones[text] = semitones
         self.spoken.append((text, voice_path.name, seed))
         if self.during_speak:
             self.during_speak()

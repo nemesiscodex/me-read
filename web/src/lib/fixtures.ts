@@ -1,4 +1,4 @@
-import type { Block, Character, Moment, Segment } from '../api'
+import type { Block, Character, Moment, Segment, Take } from '../api'
 
 export function segment(id: number, patch: Partial<Segment> = {}): Segment {
   return {
@@ -54,6 +54,10 @@ export function character(id: number, patch: Partial<Character> = {}): Character
     takes: [],
     ...patch,
   }
+}
+
+export function take(emotion: Take['emotion'], patch: Partial<Take> = {}): Take {
+  return { emotion, state: 'none', rev: 0, semitones: 0, ...patch }
 }
 
 /** A drawn picture on the block with the same number. */

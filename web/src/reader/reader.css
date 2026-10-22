@@ -1010,6 +1010,28 @@
   padding-right: 0.2em;
 }
 
+.take-shift {
+  appearance: none;
+  padding: 0.2em 0.5em;
+  border: 0;
+  border-left: 1px solid var(--rule);
+  background: none;
+  font: inherit;
+  color: inherit;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  cursor: pointer;
+}
+
+.take-shift[data-shifted] {
+  color: var(--ink);
+}
+
+.take-shift:hover {
+  background: var(--wash);
+  color: var(--ink);
+}
+
 .take-make {
   text-decoration: underline;
   text-underline-offset: 0.15em;
@@ -1090,6 +1112,22 @@
   flex-wrap: wrap;
   gap: 0.25rem;
   margin: 0.75rem 0 0 -0.75em;
+}
+
+.voice-shift {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-top: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+
+.voice-shift output {
+  min-width: 2.5ch;
+  text-align: center;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
 }
 
 .cast-merge {

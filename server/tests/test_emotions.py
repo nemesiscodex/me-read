@@ -188,11 +188,11 @@ def test_making_a_take_again_rereads_only_the_lines_in_that_emotion(world):
     tom = cast(world)['Tom']['id']
     spoken, directed = len(world.engine.spoken), len(world.engine.directed)
     asked = world.client.post(f'/api/characters/{tom}/takes/angry').json()
-    assert asked['takes'][2] == {'emotion': 'angry', 'state': 'queued', 'rev': 1}
+    assert asked['takes'][2] == {'emotion': 'angry', 'state': 'queued', 'rev': 1, 'semitones': 0}
     world.drain()
     assert world.engine.directed[directed:] == [(f'{tom}.wav', 'angry')]
     assert [text for text, _, _ in world.engine.spoken[spoken:]] == ['Only me']
-    assert world.store.take(tom, 'angry') == {'emotion': 'angry', 'state': 'ready', 'rev': 1}
+    assert world.store.take(tom, 'angry') == {'emotion': 'angry', 'state': 'ready', 'rev': 1, 'semitones': 0}
 
 
 def test_a_spanish_book_reads_every_line_in_the_characters_own_voice(world):

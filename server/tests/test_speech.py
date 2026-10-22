@@ -1,4 +1,5 @@
 import hashlib
+import io
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -386,6 +387,68 @@ def test_median_pitch_finds_the_fundamental_of_a_voiced_tone(hz):
     tone = sum(0.3 / k * np.sin(2 * np.pi * hz * k * t) for k in (1, 2, 3)).astype('float32')
     assert speech.median_pitch(tone, rate) == pytest.approx(hz, rel=0.05)
     assert speech.median_pitch(np.zeros(2 * rate, dtype='float32'), rate) is None
+
+
+
+def voiced(hz, seconds, rate=24000):
+    t = np.arange(int(seconds * rate)) / rate
+    return sum(0.3 / k * np.sin(2 * np.pi * hz * k * t) for k in (1, 2, 3)).astype('float32')
+
+
+def lines_from(engine, made):
+    """Has the engine's raw line maker return `made` and keep the reference WAV bytes each line was cloned from."""
+    references = []
+
+    def line(text, voice_path, seed, language):
+        references.append(Path(voice_path).read_bytes())
+        return made, 24000
+    engine.raw = engine.raw._replace(line=line)
+    return references
+
+
+def test_a_line_is_cloned_from_the_take_shifted_and_its_clip_is_shifted_back(tmp_path):
+    take = tmp_path / 'take.wav'
+    sf.write(take, voiced(450, 7), 24000, format='WAV', subtype='PCM_16')
+    engine = speech.Engine(tmp_path / 'hub')
+    made = voiced(300, 2)
+    references = lines_from(engine, made)
+
+    audio, rate = engine.speak('Stop right there!', take, 42, semitones=-3)
+    reference, reference_rate = sf.read(io.BytesIO(references[0]), dtype='float32')
+    assert speech.median_pitch(reference, reference_rate) == pytest.approx(450 * 2 ** (-3 / 12), rel=0.02)
+    assert (reference_rate, len(reference)) == (24000, round(7 * 24000 * 2 ** (3 / 12)))
+    assert rate == 24000 and len(audio) == round(len(made) / 2 ** (3 / 12))
+    assert speech.median_pitch(audio, rate) == pytest.approx(300 * 2 ** (3 / 12), rel=0.02)
+    engine.speak('Again!', take, 43, semitones=-3)
+    assert references[1] == references[0], 'the same reference, so its conditioning and upload are reused'
+
+    plain, _ = engine.speak('Stop right there!', take, 42)
+    assert references[2] == take.read_bytes()
+    np.testing.assert_array_equal(plain, made)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ['hub', 'take.wav']
+
+
+def test_a_clip_is_checked_for_rambling_once_it_is_shifted_back(tmp_path):
+    take = recording(tmp_path / 'take.wav')
+    engine = speech.Engine(tmp_path / 'hub')
+    # One word may run 3.4 seconds. Shifted back up three semitones, 3.6 seconds become 3.03.
+    references = lines_from(engine, voiced(300, 3.6))
+    engine.speak('Stop!', take, 42)
+    assert len(references) == speech.PROVIDERS['chatterbox'].retakes
+    del references[:]
+    engine.speak('Stop!', take, 42, semitones=-3)
+    assert len(references) == 1
+
+
+def test_a_shifted_take_is_conditioned_once_for_all_its_lines(tmp_path, models):
+    take = tmp_path / 'take.wav'
+    sf.write(take, voiced(450, 7), 24000, format='WAV', subtype='PCM_16')
+    engine = speech.Engine(tmp_path / 'hub')
+    engine.speak('One.', take, 42, semitones=-3)
+    engine.speak('Two.', take, 43, semitones=-3)
+    [(conditioned, _, _)] = models.prepared
+    reference, rate = sf.read(io.BytesIO(conditioned), dtype='float32')
+    assert speech.median_pitch(reference, rate) == pytest.approx(450 * 2 ** (-3 / 12), rel=0.02)
 
 
 def test_the_first_sample_within_the_ceiling_is_kept_and_no_more_are_made():

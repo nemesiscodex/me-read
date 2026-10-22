@@ -351,6 +351,14 @@ def test_shifting_a_sample_down_plays_it_slower_and_so_lower():
     assert speech.shifted(tone, 0) is tone
 
 
+def test_shifting_up_drops_a_tone_pushed_past_the_highest_frequency_instead_of_folding_it_back():
+    rate = 24000
+    tone = (0.5 * np.sin(2 * np.pi * 10000 * np.arange(rate) / rate)).astype('float32')
+    higher = speech.shifted(tone, 5)
+    assert 10000 * 2 ** (5 / 12) > rate / 2
+    assert np.sqrt((higher ** 2).mean()) < 1e-3 * np.sqrt((tone ** 2).mean())
+
+
 def test_closing_the_hub_ends_open_event_streams_and_refuses_new_ones():
     async def scenario():
         hub = Hub()

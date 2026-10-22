@@ -8,7 +8,9 @@ import threading
 import time
 from pathlib import Path
 
-from . import epub, segment
+import soundfile as sf
+
+from . import epub, segment, speech
 from .emotions import DIRECTIONS, EMOTIONS
 
 
@@ -18,6 +20,7 @@ def emotion_check(emotions):
 
 
 EMOTION = f"TEXT NOT NULL DEFAULT 'neutral' {emotion_check(EMOTIONS)}"
+SEMITONES = 'INTEGER NOT NULL DEFAULT 0 CHECK (semitones BETWEEN -12 AND 12)'
 SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS generation_identity (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1), identity TEXT NOT NULL);
@@ -77,7 +80,7 @@ CREATE TABLE IF NOT EXISTS voice_take (
   character_id INTEGER NOT NULL REFERENCES character(id) ON DELETE CASCADE,
   emotion TEXT NOT NULL {emotion_check(DIRECTIONS)},
   state TEXT NOT NULL DEFAULT 'none' CHECK (state IN ('none', 'queued', 'making', 'ready', 'failed')),
-  rev INTEGER NOT NULL DEFAULT 0, made_from INTEGER, error TEXT, PRIMARY KEY (character_id, emotion));
+  rev INTEGER NOT NULL DEFAULT 0, made_from INTEGER, error TEXT, semitones {SEMITONES}, PRIMARY KEY (character_id, emotion));
 CREATE TABLE IF NOT EXISTS emotion_direction (emotion TEXT PRIMARY KEY, specification TEXT NOT NULL);
 """
 SEGMENT = 'id, block_id, seq, text, kind, character_id, emotion, audio_state, audio_rev, duration, error'
@@ -104,7 +107,7 @@ ADDED_COLUMNS = {'book': {'language': "TEXT NOT NULL DEFAULT 'en'", 'position_se
     'moment': {'wanted': 'INTEGER NOT NULL DEFAULT 0', 'starred': 'INTEGER NOT NULL DEFAULT 0',
                'title': "TEXT NOT NULL DEFAULT ''", 'summary': "TEXT NOT NULL DEFAULT ''",
                'importance': 'INTEGER NOT NULL DEFAULT 5'},
-    'segment': {'emotion': EMOTION}}
+    'segment': {'emotion': EMOTION}, 'voice_take': {'semitones': SEMITONES}}
 
 
 def illustrating(settings):
@@ -335,10 +338,10 @@ class Store:
             characters = self.all(f"SELECT {CHARACTER} FROM character c WHERE {where} ORDER BY c.role != 'narrator', c.id", args)
             ids = [c['id'] for c in characters]
             made = {(t.pop('character_id'), t['emotion']): t for t in self.all(
-                f'SELECT t.character_id, t.emotion, {TAKE_STATE} AS state, t.rev FROM voice_take t '
+                f'SELECT t.character_id, t.emotion, {TAKE_STATE} AS state, t.rev, t.semitones FROM voice_take t '
                 f"JOIN character c ON c.id = t.character_id WHERE t.character_id IN ({','.join('?' * len(ids))})", ids)}
         for c in characters:
-            c['takes'] = [made.get((c['id'], emotion), {'emotion': emotion, 'state': 'none', 'rev': 0})
+            c['takes'] = [made.get((c['id'], emotion), {'emotion': emotion, 'state': 'none', 'rev': 0, 'semitones': 0})
                           for emotion in DIRECTIONS]
         return characters
 
@@ -443,6 +446,23 @@ class Store:
             self.run("UPDATE character SET voice_state = 'ready' WHERE id = ?", (character_id,))
             return True
 
+    def shift_draft(self, character_id, semitones):
+        """Offer the current voice moved by `semitones` as the candidate, replacing one being designed. False without a voice."""
+        with self.lock:
+            character = self.character(character_id)
+            voice = self.voice_path(character)
+            if character['voice_state'] != 'ready' or not voice.is_file():
+                return False
+            audio, rate = sf.read(voice, dtype='float32', always_2d=True)
+            target = self.draft_path(character)
+            with tempfile.TemporaryDirectory(dir=target.parent) as folder:
+                sample = Path(folder) / 'draft.wav'
+                sf.write(sample, speech.shifted(audio.mean(axis=1), semitones), rate, format='WAV')
+                sample.replace(target)
+            self.run("UPDATE character SET draft_state = 'ready', draft_rev = draft_rev + 1, draft_status = NULL, "
+                     'draft_updated_at = NULL WHERE id = ?', (character_id,))
+            return True
+
     def take(self, character_id, emotion):
         return next(t for t in self.character(character_id)['takes'] if t['emotion'] == emotion)
 
@@ -451,6 +471,18 @@ class Store:
         self.run("INSERT INTO voice_take (character_id, emotion, state) VALUES (?, ?, 'queued') "
                  "ON CONFLICT (character_id, emotion) DO UPDATE SET state = 'queued', rev = rev + 1, error = NULL",
                  (character_id, emotion))
+
+    def shift_take(self, character_id, emotion, semitones):
+        """Have the lines in a take cloned from it moved by `semitones`, then moved back. When that changes, the lines
+        already read in it are read again. Returns whether it changed."""
+        with self.lock:
+            if self.take(character_id, emotion)['semitones'] == semitones:
+                return False
+            self.run('INSERT INTO voice_take (character_id, emotion, semitones) VALUES (?, ?, ?) '
+                     'ON CONFLICT (character_id, emotion) DO UPDATE SET semitones = excluded.semitones',
+                     (character_id, emotion, semitones))
+            self.invalidate_audio("character_id = ? AND emotion = ? AND kind = 'speech'", (character_id, emotion))
+            return True
 
     def merge_character(self, character_id, into):
         with self.lock:

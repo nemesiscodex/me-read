@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { BookDetail } from '../api'
-import { block, character, moment, segment } from './fixtures'
+import { block, character, moment, segment, take } from './fixtures'
 import { mergeMoments, mergeSegments, mergeTagStates, readerReducer, upsertCharacter, type ReaderData } from './readerState'
 
 const book: BookDetail = {
@@ -98,9 +98,9 @@ describe('server events', () => {
   })
 
   it('shows the takes of the cast as they are made', () => {
-    const making = character(2, { takes: [{ emotion: 'angry', state: 'making', rev: 0 }] })
+    const making = character(2, { takes: [take('angry', { state: 'making' })] })
     const data = readerReducer(opened(), { type: 'event', event: { type: 'characters', characters: [making] } })!
-    expect(data.book.characters[0]!.takes).toEqual([{ emotion: 'angry', state: 'making', rev: 0 }])
+    expect(data.book.characters[0]!.takes).toEqual([take('angry', { state: 'making' })])
   })
 
   it('records what the workers are doing', () => {

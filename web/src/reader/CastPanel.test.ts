@@ -3,7 +3,7 @@ import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { api, type Character } from '../api'
-import { character } from '../lib/fixtures'
+import { character, take } from '../lib/fixtures'
 import { CastPanel } from './CastPanel'
 
 let host: HTMLDivElement
@@ -103,4 +103,40 @@ it('keeps the picker available and reports a failed replacement', async () => {
   expect(host.querySelector('.voice-picker')).not.toBeNull()
   expect(host.querySelector('[role="alert"]')?.textContent).toContain('That saved voice changed')
   expect(host.querySelector<HTMLButtonElement>('.saved-voice .button')?.disabled).toBe(false)
+})
+
+it('makes a candidate from the current voice moved by the chosen semitones', async () => {
+  const shift = vi.spyOn(api, 'shiftVoice').mockResolvedValue(character(98, { draft_state: 'ready', draft_rev: 1 }))
+  await render(character(98))
+  const button = (label: string) =>
+    [...host.querySelectorAll('button')].find(b => b.textContent?.trim() === label || b.getAttribute('aria-label') === label)
+  expect(host.querySelector('.voice-shift output')?.textContent).toBe('0')
+  expect(button('Make candidate')?.disabled).toBe(true)
+  await act(async () => button('One semitone higher')?.click())
+  await act(async () => button('One semitone higher')?.click())
+  expect(host.querySelector('.voice-shift output')?.textContent).toBe('+2')
+  await act(async () => button('Make candidate')?.click())
+  expect(shift).toHaveBeenCalledWith(98, 2)
+})
+
+it('offers no pitch shift before the character has a voice', async () => {
+  await render(character(98, { voice_state: 'designing' }))
+  expect(host.querySelector('.voice-shift')).toBeNull()
+})
+
+it('reads a take the chosen semitones lower and raises it back', async () => {
+  const set = vi.spyOn(api, 'setTakeSemitones').mockResolvedValue(character(98))
+  const takes = [take('angry', { state: 'ready' }), take('shouting', { state: 'ready', semitones: -2 })]
+  await act(async () => root.render(createElement(CastPanel, {
+    characters: [character(98, { name: 'Owen', takes })], settings: null, emotions: true, speechActivity: null,
+    onClose() {}, onCharacter() {}, onMerged() {}, onSample() {},
+  })))
+  const shift = (label: string) => host.querySelector<HTMLSelectElement>(`select[aria-label="Semitones for Owen, ${label}"]`)!
+  expect(shift('Angry (restrained)').value).toBe('0')
+  expect(shift('Shouting').selectedOptions[0]?.textContent).toBe('-2')
+  await act(async () => {
+    shift('Shouting').value = '-3'
+    shift('Shouting').dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  expect(set).toHaveBeenCalledWith(98, 'shouting', -3)
 })

@@ -25,6 +25,8 @@ export interface Take {
   state: TakeState
   /** Bumped each time the take is made again by hand. */
   rev: number
+  /** Lines are cloned from the take moved by this many semitones, then moved back. Below 0 for a take too high to clone. */
+  semitones: number
 }
 
 export interface Character {
@@ -246,6 +248,9 @@ export const api = {
     request<Character>(`/api/characters/${id}`, json('PATCH', input)),
   /** Design a candidate sample from the character's current description. Calling it again makes a different one. */
   requestDraft: (id: number) => request<Character>(`/api/characters/${id}/voice/draft`, json('POST')),
+  /** Offer the current voice moved up or down by whole semitones as the candidate, in place of any being designed. */
+  shiftVoice: (id: number, semitones: number) =>
+    request<Character>(`/api/characters/${id}/voice/shift`, json('POST', { semitones })),
   discardDraft: (id: number) => request<Character>(`/api/characters/${id}/voice/draft`, { method: 'DELETE' }),
   /** Make the candidate the character's voice. Their lines are read again in it. */
   approveDraft: (id: number) => request<Character>(`/api/characters/${id}/voice/draft/approve`, json('POST')),
@@ -256,6 +261,9 @@ export const api = {
   /** Make the take now, or make it again. Lines already read in it are read again in the new take. */
   makeTake: (id: number, emotion: Take['emotion']) =>
     request<Character>(`/api/characters/${id}/takes/${emotion}`, json('POST')),
+  /** Lines already read in the take are read again when this changes. 0 reads it as it is. */
+  setTakeSemitones: (id: number, emotion: Take['emotion'], semitones: number) =>
+    request<Character>(`/api/characters/${id}/takes/${emotion}/semitones`, json('PUT', { semitones })),
   /** Draw the portrait again with a new seed, and the pictures the character is in. */
   redrawPortrait: (id: number) => request<Character>(`/api/characters/${id}/portrait/redraw`, json('POST')),
   /** One Claude or Codex call over every paragraph of the book about the character. Replaces the appearance. */

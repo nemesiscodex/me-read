@@ -169,10 +169,15 @@ def within_ceiling(tries, make, ceiling):
 
 
 def shifted(audio, semitones):
-    """The audio played slower or faster, which moves pitch and timbre together, as a larger or smaller speaker would."""
+    """The audio played slower or faster, which moves pitch and timbre together, as a larger or smaller speaker would.
+
+    It is resampled in the spectrum, so what a shift up pushes past the highest frequency is dropped, not folded back
+    as a noise the cloning model would copy."""
     if not semitones:
         return audio
-    return np.interp(np.arange(0, len(audio) - 1, 2 ** (semitones / 12)), np.arange(len(audio)), audio).astype('float32')
+    size = round(len(audio) / 2 ** (semitones / 12))
+    # irfft crops or zero-pads the spectrum to `size`.
+    return (np.fft.irfft(np.fft.rfft(audio), size) * (size / len(audio))).astype('float32')
 
 
 def most_distinct(shifts, alike):
@@ -409,7 +414,7 @@ class Engine:
         os.environ.setdefault('TQDM_DISABLE', '1')
         os.environ.setdefault('TRANSFORMERS_VERBOSITY', 'error')
         self.chatterbox = self.multilingual = self.designer = self.narrator = self.breeze = None
-        self.voices, self.speakers, self.transcripts, self.uploads = {}, {}, {}, {}
+        self.voices, self.speakers, self.transcripts, self.uploads, self.moved = {}, {}, {}, {}, {}
         gpu = self.remote is not None
         self.raw = Raw(design=self._gpu_design if gpu else self._mlx_design,
                        take=self._gpu_take if gpu else self._mlx_take,
@@ -698,14 +703,33 @@ class Engine:
             return True
         self._cached(self.uploads, name, upload)
 
-    def speak(self, text, voice_path, seed, language='en'):
-        """`text` spoken in the saved sample's voice, as mono float32 samples and their actual rate."""
+    def _moved(self, voice_path, semitones):
+        """WAV bytes of the saved sample shifted by `semitones`. The same sample and shift give the same bytes, so the
+        conditioning, transcript and upload caches made from them are reused."""
+        wav = Path(voice_path).read_bytes()
+
+        def move():
+            audio, rate = sf.read(io.BytesIO(wav), dtype='float32', always_2d=True)
+            return wav_of(shifted(audio.mean(axis=1), semitones), rate)
+        return self._cached(self.moved, (hashlib.sha256(wav).hexdigest(), semitones), move)
+
+    def speak(self, text, voice_path, seed, language='en', semitones=0):
+        """`text` spoken in the saved sample's voice, as mono float32 samples and their actual rate.
+
+        With `semitones`, the model clones the sample shifted by that many and each clip is shifted back. A model that
+        clones a very high take speaks it in two voices at once; cloning it lower and raising the clip avoids that.
+        """
         self.provider.validate_language(language)
         words = len(text.split())
-        # A short line sometimes rambles on past its text; a clip far longer than its words is retaken.
-        for attempt in range(self.provider.retakes):
-            audio, rate = self.raw.line(text, voice_path, seed + attempt, language)
-            audio = trim(audio, rate)
-            if len(audio) / rate <= 2.5 + words * 0.9:
-                break
+        with tempfile.TemporaryDirectory() as tmp:
+            reference = voice_path
+            if semitones:
+                reference = Path(tmp) / 'reference.wav'
+                reference.write_bytes(self._moved(voice_path, semitones))
+            # A short line sometimes rambles on past its text; a clip far longer than its words is retaken.
+            for attempt in range(self.provider.retakes):
+                audio, rate = self.raw.line(text, reference, seed + attempt, language)
+                audio = trim(shifted(audio, -semitones), rate)
+                if len(audio) / rate <= 2.5 + words * 0.9:
+                    break
         return audio, rate
