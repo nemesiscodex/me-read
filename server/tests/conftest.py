@@ -124,7 +124,7 @@ class FakeImager:
 @pytest.fixture
 def world(tmp_path):
     engine, ask, draw = FakeEngine(), FakeTagger(), FakeImager()
-    app = create_app(tmp_path, engine=engine, ask=ask, draw=draw, run_workers=False)
+    app = create_app(tmp_path, engine=engine, ask=ask, draw=draw, run_workers=False, tts_provider='chatterbox')
     with TestClient(app) as client:
         book = client.post('/api/books', files={'file': ('gate.epub', make_epub(), 'application/epub+zip')}).json()
 

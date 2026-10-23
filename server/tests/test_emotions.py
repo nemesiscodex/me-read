@@ -262,9 +262,10 @@ def test_a_take_requires_a_ready_voice_and_is_available_for_spanish_chatterbox(w
 
 
 @pytest.mark.parametrize('emotion', DIRECTIONS)
-def test_spanish_chatterbox_reads_from_one_reusable_breeze_take(world, emotion):
+@pytest.mark.parametrize('provider', ['ming', 'chatterbox'])
+def test_spanish_narrators_read_from_one_reusable_breeze_take(world, emotion, provider):
     from conftest import SPANISH, make_epub
-    world.engine.provider = speech.PROVIDERS['chatterbox']
+    world.engine.provider = speech.PROVIDERS[provider]
     book = world.client.post('/api/books', files={'file': ('es.epub', make_epub((SPANISH,)), 'application/epub+zip')}).json()
     detail = world.client.get(f"/api/books/{book['id']}").json()
     assert detail['emotions'] == ['neutral', *DIRECTIONS]

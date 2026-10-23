@@ -23,13 +23,13 @@ def test_help_lists_registry_choices_and_creates_no_library(tmp_path, monkeypatc
         __main__.main()
     assert exited.value.code == 0
     help_text = ' '.join(capsys.readouterr().out.split())
-    assert '--tts-provider {chatterbox,fish,breeze,breeze-gguf}' in help_text
+    assert '--tts-provider {ming,chatterbox,fish,breeze,breeze-gguf}' in help_text
     assert 'default: chatterbox' in help_text and 'breeze is English-only' in help_text
     assert '--tts-url' in help_text and 'for example http://127.0.0.1:8781' in help_text and 'you may use the reference voices' in help_text
     assert not home.exists()
 
 
-@pytest.mark.parametrize('provider', [None, 'fish', 'breeze'])
+@pytest.mark.parametrize('provider', [None, 'chatterbox', 'fish', 'breeze'])
 def test_cli_wires_the_narrator_without_loading_any_models(tmp_path, monkeypatch, provider):
     apps = []
     monkeypatch.setattr(speech.Engine, '_snapshot', forbid_snapshot)
@@ -92,6 +92,7 @@ def test_a_url_needs_consent_and_consent_needs_a_url_with_any_narrator(tmp_path,
 
 
 @pytest.mark.parametrize('provider, narration', [
+    ('ming', 'this Mac with mlx-community/Ming-3.0-tts-0.5B-8bit'),
     ('chatterbox', 'the speech service at 127.0.0.1:8781'),
     ('breeze-gguf', 'the speech service at 127.0.0.1:8781'),
     ('fish', 'this Mac with mlx-community/fish-audio-s2-pro-8bit'),

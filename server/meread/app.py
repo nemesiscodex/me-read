@@ -148,7 +148,7 @@ class Hub:
             self.listeners[book_id].discard(queue)
 
 
-def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers=True, tts_provider='chatterbox',
+def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers=True, tts_provider=speech.DEFAULT_PROVIDER,
                tts_url=None, tts_consent=None):
     provider = speech.PROVIDERS[tts_provider]
     store = Store(home)

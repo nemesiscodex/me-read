@@ -318,7 +318,7 @@ class Pipeline:
         return self.store.one('SELECT language FROM book WHERE id = ?', (book_id,))['language']
 
     def emotions(self, book_id):
-        return getattr(self.engine, 'provider', speech.PROVIDERS['chatterbox']).emotions(self._language(book_id))
+        return getattr(self.engine, 'provider', speech.PROVIDERS[speech.DEFAULT_PROVIDER]).emotions(self._language(book_id))
 
     def _land(self, write, target, claim):
         """Write a file next to `target` and move it into place only if `claim` still holds in the database."""

@@ -1,0 +1,8 @@
+[
+  {"id": "en-narration", "language": "en", "text": "The station clock struck midnight. Beyond the empty platform, a single light moved slowly through the trees."},
+  {"id": "en-dialogue", "language": "en", "text": "Wait! Did you hear that? I thought we were alone. Please, tell me you remembered to lock the door."},
+  {"id": "en-pronunciation", "language": "en", "text": "On October twenty-second, Doctor Rivera paid twenty-three dollars and fifty cents for three tickets to Asunción."},
+  {"id": "es-narration", "language": "es", "text": "El reloj de la estación marcó la medianoche. Más allá del andén vacío, una sola luz avanzaba lentamente entre los árboles."},
+  {"id": "es-dialogue", "language": "es", "text": "¡Espera! ¿Has oído eso? Creía que estábamos solos. Por favor, dime que te acordaste de cerrar la puerta con llave."},
+  {"id": "es-pronunciation", "language": "es", "text": "El veintidós de octubre, el doctor Rivera pagó veintitrés dólares con cincuenta centavos por tres pasajes a Asunción."}
+]

@@ -2,7 +2,7 @@
 
 me-read runs on a Mac by itself. A Linux machine with a GPU can add two things:
 
-- **Speech.** The [speech service](../speech-service/README.md) designs voices, makes emotion takes, compares speakers, and narrates with Chatterbox or Breeze. The Mac only transcribes voices with Whisper.
+- **Speech.** The [speech service](../speech-service/README.md) designs voices, makes emotion takes, compares speakers, and narrates with Chatterbox or Breeze. Ming, Fish and local Breeze narration stay on the Mac, along with Whisper transcription.
 - **Pictures.** The [image service](../imager/README.md) draws a portrait of each character and the key moments of the book with FLUX.2 klein 4B.
 
 Both were built and tested on an AMD Radeon RX 6900 XT with 16 GB and ROCm. They cannot share a 16 GB card, so the GPU machine does one or the other at a time.
@@ -87,7 +87,7 @@ For an image service you manage yourself, start with `./start --gpu local` and e
 | Narrate with `chatterbox` | Chatterbox Turbo for English, Chatterbox Multilingual for other languages |
 | Narrate with `breeze-gguf` | Breeze, English only |
 
-With `fish` or `breeze` as the narrator, narration stays on the Mac and the service does the rest.
+With `ming`, `fish` or `breeze` as the narrator, narration stays on the Mac and the service does the rest.
 
 To narrate with Breeze on the service:
 

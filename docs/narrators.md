@@ -7,6 +7,7 @@ The narrator is the model that speaks every line in a character's voice. You cho
 | Narrator | Languages | Runs on | Notes |
 |---|---|---|---|
 | `chatterbox` (default) | English, Spanish, and other languages the model accepts | Mac or GPU machine | Clones the saved voice directly. Needs no transcript. |
+| `ming` | English, Spanish, and other languages the model accepts | Mac | Ming 3.0 0.5B 8-bit. Clones the saved voice with a local transcript. Can start a clip with a short stray sound taken from the end of the saved voice. |
 | `fish` | English, Spanish, and other languages the model accepts | Mac | Non-commercial licence. Adds about 6.7 GB. |
 | `breeze` | English only | Mac | Non-commercial licence. |
 | `breeze-gguf` | English only | GPU machine only | Needs `--tts-url` or a GPU machine. See [the GPU machine guide](gpu-machine.md). |
@@ -14,12 +15,12 @@ The narrator is the model that speaks every line in a character's voice. You cho
 To change the narrator, stop the reader and start it again with the new one:
 
 ```sh
-./start --tts-provider fish
+./start --tts-provider chatterbox
 ```
 
 `./start` keeps using the GPU machine it remembers, if any. To keep all speech on the Mac for one start, add `--gpu local`.
 
-A Breeze narrator rejects a Spanish book before it designs any voices or loads a model. Restart with `chatterbox` or `fish` to read it. me-read never switches narrator on its own.
+A Breeze narrator rejects a Spanish book before it designs any voices or loads a model. Restart with `ming`, `chatterbox` or `fish` to read it. me-read never switches narrator on its own.
 
 ## What changes when you switch
 
@@ -33,7 +34,7 @@ The `provider` setting in the library's settings is a different thing. It picks 
 
 Right-click a spoken line to choose how it is said. **Calling out** projects to someone far away. **Shouting** is a loud warning or command without anger. **Angry shouting** adds fury. **Angry (restrained)** keeps anger at a normal speaking volume.
 
-English books use Breeze emotion takes with every narrator. Spanish books use them with `--tts-provider chatterbox` (the default). Breeze receives the character's saved voice and performs an English emotion sample. Chatterbox uses that recording as the reference when reading Spanish lines. A take is reused for the character's lines in that emotion.
+English books use Breeze emotion takes with every narrator. Spanish books use them with Chatterbox (the default) or `--tts-provider ming`. Breeze receives the character's saved voice and performs an English emotion sample. The narrator uses that recording as the reference when reading Spanish lines. A take is reused for the character's lines in that emotion.
 
 The Cast panel lets you hear and remake those takes, including for Spanish characters. The previews are in English; the book's narration stays in Spanish. The quality of the emotional delivery and voice match depends on the source recording.
 
@@ -45,15 +46,16 @@ Every model downloads on first use into `~/.local/share/me-read/models`. `./star
 
 | Model | Job | Size |
 |---|---|---|
+| `mlx-community/Ming-3.0-tts-0.5B-8bit` | The `ming` narrator | 1.6 GB |
 | `mlx-community/chatterbox-turbo-8bit` | Chatterbox narration of English books | 0.7 GB |
 | `mlx-community/chatterbox-8bit` | Chatterbox narration of other books | 0.9 GB |
 | `mlx-community/S3TokenizerV2` | Chatterbox's tokenizer | 0.5 GB |
 | `mlx-community/Breeze-TTS-2-mlx-4bit` | Designs English voices and makes emotion takes. Also the `breeze` narrator. | 3.0 GB |
 | `mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit` | Designs voices for books in other languages | 3.1 GB |
-| `mlx-community/whisper-large-v3-turbo-asr-fp16` | Transcribes a voice before an emotion take, and for the `fish` and `breeze` narrators | 1.6 GB |
+| `mlx-community/whisper-large-v3-turbo-asr-fp16` | Transcribes a voice before an emotion take, and for the `ming`, `fish` and `breeze` narrators | 1.6 GB |
 | `mlx-community/fish-audio-s2-pro-8bit` | The `fish` narrator | 6.7 GB |
 
-Sizes are download sizes measured from a model cache, not memory use. me-read pins Whisper to revision `624c19c9af5603fa73b83bce14d4aeea96156d18`. Speech runs through `mlx-audio==0.5.7`.
+Sizes are download sizes measured from a model cache, not memory use. me-read pins Whisper to revision `624c19c9af5603fa73b83bce14d4aeea96156d18`. Ming is pinned to revision `d0d1da6f627e4b3f20cc2db6ba4aee86d45343ad`. Speech runs through `mlx-audio==0.6.1`, which includes Ming’s required prompt fix.
 
 ## How a voice is made
 
@@ -65,9 +67,11 @@ Sizes are download sizes measured from a model cache, not memory use. me-read pi
 
 ## Transcripts
 
-Fish and Breeze need the exact words spoken in the voice they clone. Before cloning, me-read clips the voice to at most 15 seconds and transcribes those bytes with Whisper on the Mac. Whisper detects the language itself. A transcript is an automatic estimate. If transcription fails or comes back empty, the clip fails with an error instead of guessing the words. me-read caches up to 24 transcripts, keyed by the audio content, so a replaced voice always gets a new transcript.
+Ming, Fish and Breeze need the exact words spoken in the voice they clone. Before cloning, me-read clips the voice to at most 15 seconds and transcribes those bytes with Whisper on the Mac. Whisper detects the language itself. A transcript is an automatic estimate. If transcription fails or comes back empty, the clip fails with an error instead of guessing the words. me-read caches up to 24 transcripts, keyed by the audio content, so a replaced voice always gets a new transcript.
 
 Chatterbox does not use transcripts.
+
+The MLX Ming port clones from the recording and transcript without extracting CAM++ speaker embeddings. Its text normalization is not ported, so dates, numbers and abbreviations may be read incorrectly. Like other models, it can mispronounce names. A line that runs far beyond its text is retried with another seed.
 
 ## Licences
 

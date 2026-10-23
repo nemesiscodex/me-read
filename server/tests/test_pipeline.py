@@ -229,7 +229,7 @@ def test_reopening_the_library_keeps_tags_voices_clips_and_position(world, tmp_p
     before = (world.chapter(), world.store.characters(world.book['id']))
     calls, spoken, designed = len(world.ask.prompts), len(world.engine.spoken), len(world.engine.designed)
 
-    reopened = create_app(tmp_path, engine=world.engine, ask=world.ask, run_workers=False)
+    reopened = create_app(tmp_path, engine=world.engine, ask=world.ask, tts_provider='chatterbox', run_workers=False)
     with TestClient(reopened) as client:
         book = client.get(f"/api/books/{world.book['id']}").json()
         assert book['position_block'] == 3
@@ -373,7 +373,7 @@ def test_closing_the_hub_ends_open_event_streams_and_refuses_new_ones():
     assert first.startswith('data: ') and rest == [] and late == []
 
 
-@pytest.mark.parametrize('provider', ['fish', 'breeze'])
+@pytest.mark.parametrize('provider', ['ming', 'fish', 'breeze'])
 def test_provider_switch_preserves_cast_candidates_tags_and_exact_position(world, tmp_path, provider):
     from fastapi.testclient import TestClient
     from meread.app import create_app
@@ -414,13 +414,13 @@ def test_provider_switch_preserves_cast_candidates_tags_and_exact_position(world
     again = create_app(tmp_path, engine=world.engine, tts_provider=provider, run_workers=False)
     assert again.state.store.all('SELECT id, audio_state, audio_rev, duration FROM segment') == (
         reopened.state.store.all('SELECT id, audio_state, audio_rev, duration FROM segment'))
-    returned = create_app(tmp_path, engine=world.engine, run_workers=False)
+    returned = create_app(tmp_path, engine=world.engine, tts_provider='chatterbox', run_workers=False)
     assert all(s['audio_state'] == 'none' and s['audio_rev'] == clip['audio_rev'] + 2
                for clip in clips for s in [returned.state.store.segment(clip['id'])])
     assert {path: path.read_bytes() for path in samples} == samples
 
 
-@pytest.mark.parametrize('provider, bump', [('chatterbox', 0), ('fish', 1)])
+@pytest.mark.parametrize('provider, bump', [('chatterbox', 0), ('ming', 1), ('fish', 1)])
 def test_legacy_library_without_identity_is_chatterbox(world, tmp_path, provider, bump):
     from meread.app import create_app
 

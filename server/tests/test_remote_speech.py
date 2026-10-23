@@ -742,6 +742,11 @@ def test_with_the_service_chatterbox_designs_directs_compares_and_narrates_witho
 
 
 PINNED_IDENTITY = {
+    'ming': {'provider': 'ming', 'policy': 1, 'transcription_policy': 'whisper-auto-language-16khz-v1',
+             'reference_silence': 1.0, 'models': [
+        {'id': 'mlx-community/Ming-3.0-tts-0.5B-8bit', 'revision': 'd0d1da6f627e4b3f20cc2db6ba4aee86d45343ad'},
+        {'id': 'mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit'},
+        {'id': 'mlx-community/whisper-large-v3-turbo-asr-fp16', 'revision': '624c19c9af5603fa73b83bce14d4aeea96156d18'}]},
     'chatterbox': {'provider': 'chatterbox', 'policy': 1, 'models': [
         {'id': 'mlx-community/chatterbox-turbo-8bit'}, {'id': 'mlx-community/chatterbox-8bit'},
         {'id': 'mlx-community/S3TokenizerV2'}, {'id': 'mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit'}]},

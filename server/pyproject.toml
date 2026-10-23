@@ -1,13 +1,13 @@
 [project]
 name = "me-read-server"
 version = "0.1.0"
-description = "Local server for me-read: EPUB parsing, speaker tagging and Chatterbox speech"
+description = "Local server for me-read: EPUB parsing, speaker tagging and Ming speech"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "python-multipart>=0.0.9",
-    "mlx-audio==0.5.7",
+    "mlx-audio==0.6.1",
     "soundfile>=0.13",
     "huggingface_hub>=0.30",
     "lxml>=5",

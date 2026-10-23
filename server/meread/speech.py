@@ -28,6 +28,9 @@ TOKENIZER = 'mlx-community/S3TokenizerV2'
 DESIGNER = 'mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit'
 MULTILINGUAL = 'mlx-community/chatterbox-8bit'
 BREEZE = 'mlx-community/Breeze-TTS-2-mlx-4bit'
+MING = 'mlx-community/Ming-3.0-tts-0.5B-8bit'
+MODEL_REVISIONS = {MING: 'd0d1da6f627e4b3f20cc2db6ba4aee86d45343ad'}
+DEFAULT_PROVIDER = 'chatterbox'
 TRANSCRIBER = 'mlx-community/whisper-large-v3-turbo-asr-fp16'
 TRANSCRIBER_REVISION = '624c19c9af5603fa73b83bce14d4aeea96156d18'
 TRANSCRIPTION_POLICY = 'whisper-auto-language-16khz-v1'
@@ -46,32 +49,37 @@ class Provider:
     # The model the GPU speech service narrates with, or None when only MLX on this Mac narrates.
     service: str | None = None
     retakes: int = 1
+    # Seconds of silence after the saved sample, for a model that otherwise continues the sample's last word into the clip.
+    reference_silence: float = 0
 
     def emotions(self, language):
-        if language == 'en' or (language == 'es' and self.name == 'chatterbox'):
+        if language == 'en' or (language == 'es' and self.name in ('ming', 'chatterbox')):
             return EMOTIONS
         return ('neutral',)
 
     @property
     def identity(self):
-        models = [{'id': model} for model in (*self.models, DESIGNER)]
+        models = [{'id': model, **({'revision': MODEL_REVISIONS[model]} if model in MODEL_REVISIONS else {})}
+                  for model in (*self.models, DESIGNER)]
         if self.reference != 'conditionals':
             models.append({'id': TRANSCRIBER, 'revision': TRANSCRIBER_REVISION})
         return {'provider': self.name, 'models': models, 'policy': 1,
                 **({'transcription_policy': TRANSCRIPTION_POLICY} if self.reference != 'conditionals' else {}),
-                **({'spoken_disclaimer': False} if self.reference == 'remote' else {})}
+                **({'spoken_disclaimer': False} if self.reference == 'remote' else {}),
+                **({'reference_silence': self.reference_silence} if self.reference_silence else {})}
 
     def validate_language(self, language):
         if self.languages is None or language in self.languages:
             return
         name = self.name.capitalize()
         if language == 'es':
-            raise ValueError(f'{name} narrates English only. For Spanish, restart with --tts-provider chatterbox '
+            raise ValueError(f'{name} narrates English only. For Spanish, restart with --tts-provider ming, --tts-provider chatterbox '
                              'or --tts-provider fish.')
         raise ValueError(f'{name} narrates English only, and this book is in {language}.')
 
 
 PROVIDERS = {
+    'ming': Provider('ming', (MING,), None, 'path', retakes=3, reference_silence=1.0),
     'chatterbox': Provider('chatterbox', (CHATTERBOX, MULTILINGUAL, TOKENIZER), None, 'conditionals', 'chatterbox', 3),
     'fish': Provider('fish', ('mlx-community/fish-audio-s2-pro-8bit',), None, 'waveform'),
     'breeze': Provider('breeze', (BREEZE,), ('en',), 'path'),
@@ -436,11 +444,19 @@ def wav_of(audio, rate):
     return buffer.getvalue()
 
 
+def with_silence(wav, seconds):
+    """The WAV bytes `wav` followed by `seconds` of silence."""
+    if not seconds:
+        return wav
+    audio, rate = sf.read(io.BytesIO(wav), dtype='float32', always_2d=True)
+    return wav_of(np.concatenate([audio, np.zeros((int(seconds * rate), audio.shape[1]), dtype='float32')]), rate)
+
+
 class Engine:
     """The selected narrator, Breeze to design English voices and direct takes, the Qwen3 voice designer for other
     languages, and Chatterbox to tell voices apart. One worker owns all model calls."""
 
-    def __init__(self, models_dir, tts_provider='chatterbox', tts_url=None, tts_consent=None):
+    def __init__(self, models_dir, tts_provider=DEFAULT_PROVIDER, tts_url=None, tts_consent=None):
         self.provider = PROVIDERS[tts_provider]
         self.remote = connect(tts_provider, tts_url, tts_consent)
         self.hub = Path(models_dir)
@@ -463,6 +479,7 @@ class Engine:
 
     def _snapshot(self, repo, revision=None):
         from huggingface_hub import snapshot_download
+        revision = revision or MODEL_REVISIONS.get(repo)
         options = {'revision': revision} if revision else {}
         try:
             return snapshot_download(repo, cache_dir=self.hub, local_files_only=True, **options)
@@ -686,9 +703,10 @@ class Engine:
                                                  stream=False), model.sample_rate)
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'reference.wav'
-            path.write_bytes(reference.wav)
+            path.write_bytes(with_silence(reference.wav, self.provider.reference_silence))
+            options = {'lang_code': language} if self.provider.name == 'ming' else {}
             return self._generate(model.generate(text=text, ref_audio=str(path), ref_text=reference.text, seed=seed,
-                                                 stream=False), model.sample_rate)
+                                                 stream=False, **options), model.sample_rate)
 
     def _english(self, voice_path):
         model = self._cloner('en')
