@@ -9,9 +9,13 @@ from .emotions import EMOTIONS
 
 GENDERS, AGES, PITCHES = ('male', 'female', 'unknown'), ('child', 'teen', 'adult', 'elderly'), ('low', 'medium', 'high')
 LANGUAGE_NAMES = {'en': 'English', 'es': 'Spanish'}
+LETTER_GREETING = re.compile(r'^(?:my dear|dear|querid[oa]s?|estimad[oa]s?)\s+[^\n,]+,', re.I)
 SCHEMA = {
-    'type': 'object', 'additionalProperties': False, 'required': ['new_characters', 'lines'],
+    'type': 'object', 'additionalProperties': False, 'required': ['new_characters', 'lines', 'written_passages'],
     'properties': {
+        'written_passages': {'type': 'array', 'items': {
+            'type': 'object', 'additionalProperties': False, 'required': ['first', 'last', 'writer'],
+            'properties': {'first': {'type': 'integer'}, 'last': {'type': 'integer'}, 'writer': {'type': 'string'}}}},
         'new_characters': {'type': 'array', 'items': {
             'type': 'object', 'additionalProperties': False,
             'required': ['ref', 'name', 'role', 'gender', 'age', 'pitch', 'description'],
@@ -47,6 +51,21 @@ Spanish dialogue: llamar a lo lejos, gritar una advertencia, gritar con ira, and
 A line whose speaker is "narrator" is "neutral".
 
 Rules:
+- Read letters, notes and diary entries in their writer's voice, even without quotation marks. Every paragraph
+starts with [[pN]]. Return written_passages: an array of {{"first": N, "last": N, "writer": REF}} inclusive
+paragraph ranges for letters that overlap TEXT TO ATTRIBUTE; return [] when there are none. Use greetings, signatures,
+postscripts, surrounding story and both earlier and later context to identify the writer, not the recipient.
+Resolve nicknames and signatures against the cast (for example Clare can be Clara). A writer may be added in
+new_characters even if they have no quoted dialogue. Include the greeting, body, sign-off, signature and all
+postscripts. Keep the writer across paragraphs, even when the letter started earlier or ends later than the
+target batch. Return the full visible range, including context paragraphs when the letter crosses a batch boundary;
+only target paragraphs will be changed. A greeting at the end of the target still belongs to the letter whose
+body and signature appear in LATER TEXT. Stop at the next letter or the return to the surrounding story;
+dates and narrative introductions outside the letter stay with the narrator. Do not include chapter headings.
+The writer reads the entire passage, including quoted words or dialogue within it. Existing speaker annotations
+can be wrong and must not override evidence of who wrote the letter. Still return every q marker,
+using the writer as speaker inside these ranges. Ordinary unquoted narration stays with the narrator.
+Use only a writer supported by the text; leave an unidentified writer's passage with the narrator.
 - Use dialogue tags, turn-taking and context, and always pick the most likely speaker. A quoted thought belongs to \
 whoever thinks it.
 - Reuse a cast member when the text refers to them by another name, title or description. Add a character only for \
@@ -69,6 +88,11 @@ class TaggerError(RuntimeError):
     pass
 
 
+def starts_letter(block):
+    """An explicit salutation starts a fresh attribution batch, keeping adjacent writers apart."""
+    return bool(LETTER_GREETING.match(''.join(s['text'] for s in block['segments']).strip()))
+
+
 def _voice_line(c):
     traits = ' '.join(x for x in (c['gender'], c['age'], f"{c['pitch']} voice") if x != 'unknown')
     return f"c{c['id']} | {c['name']} | {c['role']} | {traits} | {c['description']}"
@@ -79,7 +103,7 @@ def book_line(book):
             + f" (language: {LANGUAGE_NAMES.get(book.get('language'), 'English')})")
 
 
-def build_prompt(book, cast, earlier, blocks):
+def build_prompt(book, cast, earlier, blocks, later=()):
     """The prompt, and the segment id behind each [[qN]] marker.
 
     `earlier` and `blocks` are blocks with their segments. Spoken lines of `blocks` without a speaker get a marker.
@@ -88,7 +112,7 @@ def build_prompt(book, cast, earlier, blocks):
     markers = {}
 
     def render(block, mark):
-        text = ''
+        text = f"[[p{block['idx']}]]"
         for seg in block['segments']:
             ask = mark and seg['kind'] == 'speech' and seg['character_id'] is None
             if ask:
@@ -97,6 +121,8 @@ def build_prompt(book, cast, earlier, blocks):
             text += seg['text']
             if not ask and seg['kind'] == 'speech' and seg['character_id'] in names:
                 text += f"[{names[seg['character_id']]}]"
+        if block.get('writer_id') in names:
+            text += f" [Written by {names[block['writer_id']]}]"
         return text
     context = [render(block, False) for block in earlier]
     target = [render(block, True) for block in blocks]
@@ -105,7 +131,9 @@ def build_prompt(book, cast, earlier, blocks):
         book_line(book),
         'CAST SO FAR (ref | name | role | voice | description):\n' + ('\n'.join(map(_voice_line, speaking)) or '(nobody yet)'),
         'EARLIER TEXT, for context only. A known speaker follows the quotation in brackets:\n' + ('\n'.join(context) or '(start of the book)'),
-        'TEXT TO ATTRIBUTE:\n' + '\n\n'.join(target)])
+        'TEXT TO ATTRIBUTE:\n' + '\n\n'.join(target),
+        'LATER TEXT, for context only. Use signatures here to identify writers:\n'
+        + ('\n\n'.join(render(block, False) for block in later) or '(end of the chapter)')])
     return prompt, markers
 
 
@@ -165,14 +193,22 @@ def _pick(value, allowed, default):
     return value if value in allowed else default
 
 
-def apply(store, book_id, markers, answer):
+def apply(store, book_id, markers, answer, blocks=()):
     """Store the answer. Returns the segment ids that got a speaker; markers the answer skipped stay unassigned."""
     cast = store.characters(book_id)
     refs = {f"c{c['id']}": c['id'] for c in cast}
     refs['narrator'] = next(c['id'] for c in cast if c['role'] == 'narrator')
     used = {line.get('speaker') for line in answer.get('lines', []) if isinstance(line, dict)}
+    used.update(p.get('writer') for p in answer.get('written_passages', []) if isinstance(p, dict))
     for new in answer.get('new_characters', []):
         if not isinstance(new, dict) or new.get('ref') not in used or not str(new.get('name', '')).strip():
+            continue
+        name = str(new['name']).strip().casefold()
+        matches = [c for c in cast if c['name'].casefold() == name]
+        if not matches and new.get('role') == 'named' and len(name.split()) == 1:
+            matches = [c for c in cast if c['role'] == 'named' and c['name'].casefold().startswith(name + ' ')]
+        if len(matches) == 1:
+            refs[new['ref']] = matches[0]['id']
             continue
         character = store.add_character(
             book_id, str(new['name']), _pick(new.get('role'), ('named', 'extra'), 'extra'),
@@ -180,6 +216,31 @@ def apply(store, book_id, markers, answer):
             _pick(new.get('pitch'), PITCHES, 'medium'), str(new.get('description', ''))[:200])
         refs[new['ref']] = character['id']
     assigned = []
+    targets = {b['idx']: b for b in blocks if b['tag'] == 'p'}
+    for passage in answer.get('written_passages', []):
+        if not isinstance(passage, dict):
+            continue
+        first, last = passage.get('first'), passage.get('last')
+        writer = refs.get(passage.get('writer'))
+        if (type(first) is not int or type(last) is not int or first > last
+                or not writer or writer == refs['narrator']):
+            continue
+        with store.lock:
+            for idx, block in targets.items():
+                if not first <= idx <= last:
+                    continue
+                if store.one('SELECT tag_state FROM block WHERE id = ?', (block['id'],))['tag_state'] != 'tagging':
+                    continue
+                store.run('UPDATE block SET writer_id = ? WHERE id = ?', (writer, block['id']))
+                for seg in block['segments']:
+                    # The snapshot comparison preserves corrections made while this request was running.
+                    changed = store.run(
+                        'UPDATE segment SET character_id = ?, emotion = ? WHERE id = ? '
+                        'AND character_id IS ? AND audio_rev = ?',
+                        (writer, 'neutral', seg['id'], seg['character_id'], seg['audio_rev'])).rowcount
+                    if changed:
+                        store.invalidate_audio('id = ?', (seg['id'],))
+                        assigned.append(seg['id'])
     for line in answer.get('lines', []):
         if not isinstance(line, dict):
             continue

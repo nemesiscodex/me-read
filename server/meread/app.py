@@ -84,6 +84,10 @@ class LineChanges(BaseModel):
     emotion: Optional[Emotion] = None
 
 
+class Writer(BaseModel):
+    character_id: int
+
+
 class Merge(BaseModel):
     into: int
 
@@ -321,14 +325,25 @@ def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers
         block = found(store.one('SELECT book_id FROM block WHERE id = ?', (block_id,)), 'paragraph')
         retag(block['book_id'], store.retag_blocks('id = ?', (block_id,)))
 
+    @app.post('/api/blocks/{block_id}/writer')
+    def set_writer(block_id: int, body: Writer):
+        block = found(store.one('SELECT book_id FROM block WHERE id = ?', (block_id,)), 'paragraph')
+        character = character_of(body.character_id)
+        if character['book_id'] != block['book_id']:
+            raise HTTPException(422, 'that character belongs to another book')
+        store.set_writer(block_id, character)
+        hub.publish(block['book_id'], {'type': 'blocks', 'blocks': [{'id': block_id, 'tag_state': 'tagged'}]})
+        announce(block['book_id'], 'block_id = ?', (block_id,))
+        return store.segments_where('block_id = ?', (block_id,))
+
     @app.post('/api/books/{book_id}/retag')
     def retag_range(book_id: int, span: Span):
-        """Send the paragraphs from `first` to `last` that have spoken lines back to the tagger."""
+        """Reconsider dialogue and written passages in the paragraphs from `first` to `last`."""
         found(store.book(book_id), 'book')
         if span.last < span.first:
             raise HTTPException(422, 'last is before first')
         ids = store.retag_blocks(
-            "book_id = ? AND idx BETWEEN ? AND ? AND EXISTS (SELECT 1 FROM segment WHERE block_id = block.id AND kind = 'speech')",
+            "book_id = ? AND idx BETWEEN ? AND ? AND tag = 'p'",
             (book_id, span.first, span.last))
         retag(book_id, ids)
         return {'retagged': len(ids)}

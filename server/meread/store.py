@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS block (
   chapter INTEGER NOT NULL, tag TEXT NOT NULL CHECK (tag IN ('p', 'h')),
   tag_state TEXT NOT NULL CHECK (tag_state IN ('pending', 'tagging', 'tagged', 'failed')),
   scene_state TEXT NOT NULL DEFAULT 'pending' CHECK (scene_state IN ('pending', 'scanning', 'done')),
+  writer_id INTEGER REFERENCES character(id) ON DELETE SET NULL,
   UNIQUE (book_id, idx));
 CREATE TABLE IF NOT EXISTS character (
   id INTEGER PRIMARY KEY, book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE, name TEXT NOT NULL,
@@ -106,7 +107,8 @@ ADDED_COLUMNS = {'book': {'language': "TEXT NOT NULL DEFAULT 'en'", 'position_se
     'appearance': "TEXT NOT NULL DEFAULT ''",
     'portrait_state': "TEXT NOT NULL DEFAULT 'none' CHECK (portrait_state IN ('none', 'drawing', 'ready', 'failed'))",
     'portrait_rev': 'INTEGER NOT NULL DEFAULT 0', 'portrait_error': 'TEXT'},
-    'block': {'scene_state': "TEXT NOT NULL DEFAULT 'pending' CHECK (scene_state IN ('pending', 'scanning', 'done'))"},
+    'block': {'scene_state': "TEXT NOT NULL DEFAULT 'pending' CHECK (scene_state IN ('pending', 'scanning', 'done'))",
+              'writer_id': 'INTEGER REFERENCES character(id) ON DELETE SET NULL'},
     'moment': {'wanted': 'INTEGER NOT NULL DEFAULT 0', 'starred': 'INTEGER NOT NULL DEFAULT 0',
                'title': "TEXT NOT NULL DEFAULT ''", 'summary': "TEXT NOT NULL DEFAULT ''",
                'importance': 'INTEGER NOT NULL DEFAULT 5'},
@@ -138,6 +140,9 @@ class Store:
         self.db.executescript(SCHEMA)
         self._allow_new_emotions()
         self._reconcile_directions()
+        if ('block', 'writer_id') in added:
+            # Older imports assumed all unquoted prose was narration. Review it as its pages come into focus.
+            self.run("UPDATE block SET tag_state = 'pending' WHERE tag = 'p'")
         if ('moment', 'importance') in added:
             # Until now only the few best moments were kept. Pages are looked through again as they are read, for
             # every moment and how much each one matters.
@@ -293,7 +298,7 @@ class Store:
                                 (book_id, n, chapter.title, idx, len(chapter.blocks)))
                 for tag, text in chapter.blocks:
                     pieces = segment.segments(text, tag, style)
-                    state = 'pending' if any(kind == 'speech' for kind, _ in pieces) else 'tagged'
+                    state = 'pending' if tag == 'p' else 'tagged'
                     block_id = self.db.execute(
                         'INSERT INTO block (book_id, idx, chapter, tag, tag_state) VALUES (?, ?, ?, ?, ?)',
                         (book_id, idx, n, tag, state)).lastrowid
@@ -319,7 +324,7 @@ class Store:
 
     def blocks(self, book_id, first, last):
         """Blocks with their segments for block positions first..last inclusive."""
-        blocks = self.all('SELECT id, idx, chapter, tag, tag_state FROM block WHERE book_id = ? AND idx BETWEEN ? AND ? '
+        blocks = self.all('SELECT id, idx, chapter, tag, tag_state, writer_id FROM block WHERE book_id = ? AND idx BETWEEN ? AND ? '
                           'ORDER BY idx', (book_id, first, last))
         by_id = {b['id']: b for b in blocks}
         for b in blocks:
@@ -489,6 +494,7 @@ class Store:
 
     def merge_character(self, character_id, into):
         with self.lock:
+            self.run('UPDATE block SET writer_id = ? WHERE writer_id = ?', (into, character_id))
             self.run('UPDATE segment SET character_id = ? WHERE character_id = ?', (into, character_id))
             self.invalidate_audio('character_id = ?', (into,))
             # A moment that shows both keeps the survivor's row; the other goes with the deleted character.
@@ -522,11 +528,21 @@ class Store:
             ids = [row['id'] for row in self.all(f'SELECT id FROM block WHERE {where}', args)]
             if ids:
                 marks = ','.join('?' * len(ids))
-                self.run(f"UPDATE segment SET character_id = NULL, emotion = 'neutral' "
-                         f"WHERE block_id IN ({marks}) AND kind = 'speech'", ids)
-                self.invalidate_audio(f"block_id IN ({marks}) AND kind = 'speech'", ids)
-                self.run(f"UPDATE block SET tag_state = 'pending' WHERE id IN ({marks})", ids)
+                self.run(f"UPDATE segment SET character_id = CASE WHEN kind = 'speech' THEN NULL ELSE "
+                         f"(SELECT id FROM character WHERE book_id = segment.book_id AND role = 'narrator') END, "
+                         f"emotion = 'neutral' WHERE block_id IN ({marks})", ids)
+                self.invalidate_audio(f"block_id IN ({marks})", ids)
+                self.run(f"UPDATE block SET tag_state = 'pending', writer_id = NULL WHERE id IN ({marks})", ids)
             return ids
+
+    def set_writer(self, block_id, character):
+        """Read an entire paragraph in one voice, cancelling any attribution request in flight."""
+        with self.lock:
+            self.run("UPDATE block SET writer_id = ?, tag_state = 'tagged' WHERE id = ?",
+                     (None if character['role'] == 'narrator' else character['id'], block_id))
+            self.run("UPDATE segment SET character_id = ?, emotion = 'neutral' WHERE block_id = ?",
+                     (character['id'], block_id))
+            self.invalidate_audio('block_id = ?', (block_id,))
 
     # Moments
 

@@ -36,6 +36,7 @@ export function CorrectionPopover({ bookId, segment, block, characters, at, page
   const [position, setPosition] = useState(at)
   const [draft, setDraft] = useState<CharacterInput | null>(null)
   const [query, setQuery] = useState('')
+  const [wholeParagraph, setWholeParagraph] = useState(false)
   const shown = findCast(characters, query)
   const [busy, setBusy] = useState(false)
   const [starring, setStarring] = useState(false)
@@ -79,9 +80,17 @@ export function CorrectionPopover({ bookId, segment, block, characters, at, page
     }
   }
 
+  const saveSpeaker = async (characterId: number) => {
+    if (wholeParagraph) {
+      for (const saved of await api.setWriter(block.id, characterId)) onSegment(saved)
+    } else {
+      onSegment(await api.setSpeaker(segment.id, characterId))
+    }
+  }
+
   const assign = (characterId: number) =>
     attempt(async () => {
-      onSegment(await api.setSpeaker(segment.id, characterId))
+      await saveSpeaker(characterId)
       return null
     })
 
@@ -97,7 +106,7 @@ export function CorrectionPopover({ bookId, segment, block, characters, at, page
     void attempt(async () => {
       const character = await api.createCharacter(bookId, { ...draft, name: draft.name.trim() })
       onCharacter(character)
-      onSegment(await api.setSpeaker(segment.id, character.id))
+      await saveSpeaker(character.id)
       return null
     })
   }
@@ -118,7 +127,7 @@ export function CorrectionPopover({ bookId, segment, block, characters, at, page
   const retagPage = (range: BlockRange) =>
     attempt(async () => {
       const { retagged } = await api.retagBlocks(bookId, range)
-      if (retagged === 0) return 'Nobody speaks on that page.'
+      if (retagged === 0) return 'There are no paragraphs to tag on that page.'
       return `Asked the tagger to look at ${retagged} ${retagged === 1 ? 'paragraph' : 'paragraphs'} again.`
     })
 
@@ -155,6 +164,13 @@ export function CorrectionPopover({ bookId, segment, block, characters, at, page
       ) : (
         <>
           <h3 className="popover-heading">Who says this?</h3>
+          {block.tag === 'p' && (
+            <label>
+              <input type="checkbox" checked={wholeParagraph} disabled={busy}
+                onChange={(event) => setWholeParagraph(event.target.checked)} />
+              Use this voice for the whole paragraph
+            </label>
+          )}
           <CastSearch value={query} onChange={setQuery} onPick={() => shown[0] && !busy && void assign(shown[0].id)} />
           <ul className="speaker-list">
             {shown.length === 0 && <li className="speaker-empty">Nobody is called “{query.trim()}”.</li>}

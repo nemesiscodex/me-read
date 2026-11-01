@@ -28,7 +28,7 @@ IMAGE_RETRY = 15
 SPEECH_RETRY = 15
 # Earlier clips leveled per step, about 0.15 s of work, so a new clip to make waits no longer than that.
 LEVEL_BATCH = 20
-CONTEXT_BLOCKS = 8
+CONTEXT_BLOCKS = 40
 MAX_FOCUS = 400
 SILENCE = 0.6, 24000
 WORKERS = 'tagger', 'scenes', 'speech', 'images'
@@ -122,28 +122,38 @@ class Pipeline:
             return False
         book_id = focus['book_id']
         pending = self.store.all(
-            "SELECT id, idx FROM block WHERE book_id = ? AND idx BETWEEN ? AND ? AND tag_state = 'pending' "
+            "SELECT id, idx, chapter FROM block WHERE book_id = ? AND idx BETWEEN ? AND ? AND tag_state = 'pending' "
             'ORDER BY idx < ?, idx LIMIT ?',
             (book_id, focus['first'], focus['last'], focus['current_first'], TAG_BATCH))
         if not pending:
             return False
         start = pending[0]['idx']
-        batch = [b for b in pending if b['idx'] >= start]
+        batch = [b for b in pending if b['idx'] >= start and b['chapter'] == pending[0]['chapter']]
+        blocks = self.store.blocks(book_id, start, batch[-1]['idx'])
+        boundary = next((b['idx'] for b in blocks if b['idx'] > start and tagger.starts_letter(b)), None)
+        if boundary is not None:
+            batch = [b for b in batch if b['idx'] < boundary]
         ids = [b['id'] for b in batch]
         marks = ','.join('?' * len(ids))
         self.store.run(f"UPDATE block SET tag_state = 'tagging' WHERE id IN ({marks})", ids)
         self.publish(book_id, {'type': 'blocks', 'blocks': [{'id': i, 'tag_state': 'tagging'} for i in ids]})
         book = self.store.one('SELECT title, author, language FROM book WHERE id = ?', (book_id,))
         self._say('tagger', f"Asking {settings['provider']} who speaks in {len(batch)} paragraphs")
+        chapter = self.store.one('SELECT first_block, block_count FROM chapter WHERE book_id = ? AND idx = ?',
+                                 (book_id, pending[0]['chapter']))
+        end = batch[-1]['idx']
+        targets = [b for b in blocks if b['id'] in ids]
         prompt, markers = tagger.build_prompt(
             book, self.store.characters(book_id),
-            self.store.blocks(book_id, start - CONTEXT_BLOCKS, start - 1),
-            self.store.blocks(book_id, start, batch[-1]['idx']))
+            self.store.blocks(book_id, max(chapter['first_block'], start - CONTEXT_BLOCKS), start - 1),
+            targets,
+            self.store.blocks(book_id, end + 1, min(end + CONTEXT_BLOCKS,
+                                                   chapter['first_block'] + chapter['block_count'] - 1)))
         problem = None
         try:
             answer, cost = self.ask(settings, prompt, self.llm_cwd)
             self.store.record_usage(settings['provider'], settings[f"{settings['provider']}_model"], len(batch), cost)
-            tagger.apply(self.store, book_id, markers, answer)
+            tagger.apply(self.store, book_id, markers, answer, targets)
         except tagger.TaggerError as e:
             problem = str(e)
             log.warning('tagging failed: %s', e)
@@ -157,7 +167,7 @@ class Pipeline:
                     continue
                 missed = self.store.run('UPDATE segment SET character_id = ? WHERE block_id = ? AND character_id IS NULL',
                                         (narrator, block_id)).rowcount
-                state = 'failed' if missed else 'tagged'
+                state = 'failed' if problem or missed else 'tagged'
                 self.store.run('UPDATE block SET tag_state = ? WHERE id = ?', (state, block_id))
                 states.append({'id': block_id, 'tag_state': state})
         self._publish_cast(book_id)
@@ -261,8 +271,9 @@ class Pipeline:
         seg = self.store.one(
             "SELECT s.id, s.text, s.audio_rev, s.character_id, s.emotion FROM segment s "
             "WHERE s.book_id = ? AND s.block_idx BETWEEN ? AND ? AND s.audio_state = 'none' "
+            "AND (? OR (SELECT tag_state FROM block WHERE id = s.block_id) IN ('tagged', 'failed')) "
             'AND (s.character_id IS NOT NULL OR ?) ORDER BY s.block_idx < ?, s.block_idx, s.seq LIMIT 1',
-            (book_id, focus['first'], focus['last'], paused, focus['current_first']))
+            (book_id, focus['first'], focus['last'], paused, paused, focus['current_first']))
         if seg:
             character = self.store.character(seg['character_id']) if seg['character_id'] else self.store.narrator(book_id)
             if character['voice_state'] == 'failed':

@@ -90,7 +90,7 @@ class FakeTagger:
     """
 
     def __init__(self):
-        self.prompts, self.answer, self.error, self.cost = [], None, None, 0.002
+        self.prompts, self.answer, self.error, self.cost = [], {'new_characters': [], 'lines': [], 'written_passages': []}, None, 0.002
         self.scene_prompts, self.scenes, self.scene_error = [], {'moments': [], 'ends': [], 'appearances': []}, None
         self.look_prompts, self.look, self.look_error = [], {'appearance': ''}, None
         self.star_prompts, self.star, self.star_error = [], {'moments': [], 'ends': [], 'appearances': []}, None

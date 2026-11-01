@@ -741,6 +741,8 @@ def test_breeze_rejection_preserves_cast_and_fish_restart_recovers(world, tmp_pa
     from meread.app import create_app
 
     book_id = world.book['id']
+    world.pipeline.set_focus(book_id, 0, 1, 0, 1)
+    assert world.pipeline.tag_step()
     narrator = world.store.narrator(book_id)
     if approved:
         voice = recording(tmp_path / 'upload.wav')

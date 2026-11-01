@@ -38,7 +38,7 @@ def test_imported_book_keeps_its_text_and_leaves_quotes_unattributed(world):
     blocks = world.chapter()
     assert [''.join(s['text'] for s in b['segments']) for b in blocks][:3] == [
         'Chapter One', 'The road was empty when Tom reached the gate.', '“Who goes there?” called a guard from the wall.']
-    assert [b['tag_state'] for b in blocks] == ['tagged', 'tagged', 'pending', 'pending', 'tagged', 'pending']
+    assert [b['tag_state'] for b in blocks] == ['tagged', 'pending', 'pending', 'pending', 'pending', 'pending']
     assert all(s['character_id'] is None for b in blocks for s in b['segments'] if s['kind'] == 'speech')
     detail = world.client.get(f"/api/books/{world.book['id']}").json()
     assert [(c['index'], c['title'], c['first_block'], c['block_count']) for c in detail['chapters']] == [
@@ -54,7 +54,7 @@ def test_nothing_happens_outside_the_pages_in_focus(world):
     world.drain()
     assert all(s['audio_state'] == 'ready' for b in world.chapter(0) for s in b['segments'])
     assert all(s['audio_state'] == 'none' for b in world.chapter(1) for s in b['segments'])
-    assert [b['tag_state'] for b in world.chapter(1)] == ['tagged', 'tagged', 'pending']
+    assert [b['tag_state'] for b in world.chapter(1)] == ['tagged', 'pending', 'pending']
 
 
 def test_tagging_attributes_lines_and_builds_the_cast(world):
@@ -84,7 +84,7 @@ def test_later_pages_reuse_the_cast_by_ref_and_by_name(world):
     world.drain()
     assert speakers(world, 1) == [('“Tea?”', 'Anna')]
     assert f"c{anna['id']} | Anna" in world.ask.prompts[-1]
-    assert '“You are late,”[Anna]' in world.ask.prompts[-1]
+    assert '“You are late,”[Anna]' not in world.ask.prompts[-1]  # Context stops at the chapter boundary.
     assert len(world.store.characters(world.book['id'])) == 4
 
 
@@ -102,7 +102,7 @@ def test_when_the_tagger_is_down_the_narrator_reads_everything(world):
     focus(world)
     world.drain()
     assert {name for _, name in speakers(world)} == {'Narrator'}
-    assert [b['tag_state'] for b in world.chapter()].count('failed') == 3
+    assert [b['tag_state'] for b in world.chapter()].count('failed') == 5
     assert world.pipeline.idle['tagger'] == 'Tagging failed: claude failed: Not logged in'
     assert len(world.ask.prompts) == 1
 
@@ -217,7 +217,7 @@ def test_pausing_the_tagger_stops_calls_and_the_narrator_fills_in(world):
     assert speakers(world)[0] == ('“Who goes there?”', 'Guard 1')
     assert sorted(text for text, _, _ in world.engine.spoken[spoken:]) == ['Only me', 'Open up.', 'Who goes there?', 'You are late']
     usage = world.client.get('/api/usage').json()
-    assert usage['today'] == usage['all_time'] == {'calls': 1, 'paragraphs': 3, 'cost_usd': 0.002}
+    assert usage['today'] == usage['all_time'] == {'calls': 1, 'paragraphs': 5, 'cost_usd': 0.002}
 
 
 def test_reopening_the_library_keeps_tags_voices_clips_and_position(world, tmp_path):
@@ -268,7 +268,7 @@ def test_retagging_a_paragraph_asks_again(world):
     assert world.ask.prompts[-1].count('[[q') == 1
 
 
-def test_retagging_a_page_asks_again_about_its_spoken_paragraphs(world):
+def test_retagging_a_page_asks_again_about_dialogue_and_prose(world):
     world.ask.answer = answer
     focus(world)
     world.drain()
@@ -276,14 +276,14 @@ def test_retagging_a_page_asks_again_about_its_spoken_paragraphs(world):
     world.ask.answer = lambda prompt: {
         'new_characters': [], 'lines': [{'q': q + 1, 'speaker': 'narrator'} for q in range(prompt.count('[[q'))]}
     retag = world.client.post(f"/api/books/{world.book['id']}/retag", json={'first': 2, 'last': 4})
-    assert retag.status_code == 200 and retag.json() == {'retagged': 2}
-    assert [b['tag_state'] for b in world.chapter()][2:] == ['pending', 'pending', 'tagged', 'tagged']
+    assert retag.status_code == 200 and retag.json() == {'retagged': 3}
+    assert [b['tag_state'] for b in world.chapter()][2:] == ['pending', 'pending', 'pending', 'tagged']
     assert all(s['audio_state'] == 'none' for b in world.chapter()[2:4] for s in b['segments'] if s['kind'] == 'speech')
     world.drain()
     after = speakers(world)
     assert {name for _, name in after[:-1]} == {'Narrator'}
     assert after[-1] == before[-1] and after[-1][1] != 'Narrator'
-    assert world.client.post(f"/api/books/{world.book['id']}/retag", json={'first': 0, 'last': 1}).json() == {'retagged': 0}
+    assert world.client.post(f"/api/books/{world.book['id']}/retag", json={'first': 0, 'last': 1}).json() == {'retagged': 1}
     assert world.client.post(f"/api/books/{world.book['id']}/retag", json={'first': 4, 'last': 2}).status_code == 422
 
 
