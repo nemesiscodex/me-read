@@ -214,20 +214,26 @@ class Store:
         return rows[0] if rows else None
 
     def reconcile_generation(self, identity, legacy_identity):
-        """Select the library's narrator before workers start, invalidating only clips when its identity changes."""
+        """Select the library's narrators before workers start, invalidating only the clips of languages whose
+        narrator identity changed. An identity is one narrator's for every language, or {'narrators': {language: ...}}."""
+        def by_language(value):
+            return value['narrators'] if 'narrators' in value else {language: value for language in speech.LANGUAGES}
         encoded = json.dumps(identity, sort_keys=True, separators=(',', ':'))
-        legacy = json.dumps(legacy_identity, sort_keys=True, separators=(',', ':'))
         with self.lock:
             self.db.execute('BEGIN IMMEDIATE')
             try:
                 saved = self.one('SELECT identity FROM generation_identity WHERE singleton = 1')
-                changed = (saved['identity'] if saved else legacy) != encoded
-                if changed:
+                before, after = by_language(json.loads(saved['identity']) if saved else legacy_identity), by_language(identity)
+                changed = [language for language in after if before.get(language) != after[language]]
+                if len(changed) == len(after):
                     self.invalidate_audio('1')
+                elif changed:
+                    self.invalidate_audio(f"book_id IN (SELECT id FROM book WHERE language IN ({','.join('?' * len(changed))}))",
+                                          changed)
                 self.db.execute('INSERT INTO generation_identity (singleton, identity) VALUES (1, ?) '
                                 'ON CONFLICT (singleton) DO UPDATE SET identity = excluded.identity', (encoded,))
                 self.db.execute('COMMIT')
-                return changed
+                return bool(changed)
             except Exception:
                 self.db.execute('ROLLBACK')
                 raise

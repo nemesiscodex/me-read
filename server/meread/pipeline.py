@@ -252,10 +252,8 @@ class Pipeline:
         if not focus:
             return False
         book_id = focus['book_id']
-        provider = getattr(self.engine, 'provider', None)
         try:
-            if provider is not None:
-                provider.validate_language(self._language(book_id))
+            self.engine.provider_for(self._language(book_id)).validate_language(self._language(book_id))
         except ValueError as e:
             changed = self.store.run("UPDATE segment SET audio_state = 'failed', error = ? WHERE book_id = ? "
                                      "AND block_idx BETWEEN ? AND ? AND audio_state = 'none'",
@@ -329,7 +327,7 @@ class Pipeline:
         return self.store.one('SELECT language FROM book WHERE id = ?', (book_id,))['language']
 
     def emotions(self, book_id):
-        return getattr(self.engine, 'provider', speech.PROVIDERS[speech.DEFAULT_PROVIDER]).emotions(self._language(book_id))
+        return self.engine.provider_for(self._language(book_id)).emotions(self._language(book_id))
 
     def _land(self, write, target, claim):
         """Write a file next to `target` and move it into place only if `claim` still holds in the database."""

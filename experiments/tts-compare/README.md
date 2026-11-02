@@ -120,3 +120,21 @@ server/.venv/bin/python experiments/tts-compare/report.py artifacts/tts-compare/
 ```
 
 The first Mac comparison generated 32 WAVs including warmups and repeats, with no synthesis failures or clipping. Whisper recovered every scored narration and dialogue word for Ming in English and Spanish and for Chatterbox in Spanish. For English Chatterbox dialogue it heard “remember” where the script says “remembered” (one error across 36 scored words). These are recognizer results, not a listening verdict. Dates, currency and names remain unscored listening cases. The report preserves all 12 first takes and both reference clips.
+
+## Compare Audio8 Air on the Radeon host
+
+[Audio8-TTS-Realistic-Air](https://huggingface.co/Edge0/Audio8-TTS-Realistic-Air) is a 0.6B model (Apache 2.0, 44.1 kHz) that clones a voice from a reference clip and its transcript. It needs transformers below 5, so it gets its own environment that borrows the speech service's ROCm PyTorch. The setup pins the checkpoint to `23c305cc013fde378edb459f538317043c993a74`.
+
+```sh
+scp experiments/tts-compare/*.py experiments/tts-compare/*.sh radeon:me-read-compare/
+ssh radeon 'cd ~/me-read-compare && bash setup-audio8-host.sh'
+ssh radeon 'cd ~/me-read-compare && bash run-audio8-host.sh outputs-audio8-fp16 float16'
+scp -r radeon:me-read-compare/outputs-audio8-fp16 artifacts/tts-compare/audio8/
+server/.venv/bin/python experiments/tts-compare/analyze.py artifacts/tts-compare/audio8/outputs-audio8-fp16 --whisper <whisper snapshot>
+server/.venv/bin/python experiments/tts-compare/report-audio8.py \
+  --audio8 artifacts/tts-compare/audio8/outputs-audio8-fp16 --chatterbox artifacts/tts-compare/outputs \
+  --references artifacts/tts-compare/references --audio8-label 'Audio8 Air (fp16)' \
+  --out artifacts/tts-compare/audio8/comparison.html
+```
+
+The second argument of `run-audio8-host.sh` is the dtype. On this card bfloat16 runs at about 2.9 seconds of work per audio second and float16 at about 1.1, with no failures in either. The script pauses `me-read-speech` for the run and restarts it on exit.

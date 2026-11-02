@@ -2,7 +2,7 @@
 
 me-read runs on a Mac by itself. A Linux machine with a GPU can add two things:
 
-- **Speech.** The [speech service](../speech-service/README.md) designs voices, makes emotion takes, compares speakers, and narrates with Chatterbox or Breeze. Ming, Fish and local Breeze narration stay on the Mac, along with Whisper transcription.
+- **Speech.** The [speech service](../speech-service/README.md) designs voices, makes emotion takes, compares speakers, and narrates with Chatterbox, Audio8 or Breeze. Ming, Fish and local Breeze narration stay on the Mac, along with Whisper transcription.
 - **Pictures.** The [image service](../imager/README.md) draws a portrait of each character and the key moments of the book with FLUX.2 klein 4B.
 
 Both were built and tested on an AMD Radeon RX 6900 XT with 16 GB and ROCm. They cannot share a 16 GB card, so the GPU machine does one or the other at a time.
@@ -85,9 +85,16 @@ For an image service you manage yourself, start with `./start --gpu local` and e
 | Emotion takes | Breeze |
 | Tell a new voice apart from the cast | Chatterbox's speaker model |
 | Narrate with `chatterbox` | Chatterbox Turbo for English, Chatterbox Multilingual for other languages |
+| Narrate with `audio8` | Audio8, English and Spanish. It is also the default narrator for Spanish books while the service is in use. |
 | Narrate with `breeze-gguf` | Breeze, English only |
 
 With `ming`, `fish` or `breeze` as the narrator, narration stays on the Mac and the service does the rest.
+
+By default the service reads English books with Chatterbox and Spanish books with Audio8. If Audio8 is not installed on the service, Spanish clips fail with a message that says so. Install it as the speech service README describes, or start with `--tts-provider chatterbox`. To read English with Audio8 too:
+
+```sh
+./start --tts-provider audio8
+```
 
 To narrate with Breeze on the service:
 

@@ -23,7 +23,7 @@ def test_help_lists_registry_choices_and_creates_no_library(tmp_path, monkeypatc
         __main__.main()
     assert exited.value.code == 0
     help_text = ' '.join(capsys.readouterr().out.split())
-    assert '--tts-provider {ming,chatterbox,fish,breeze,breeze-gguf}' in help_text
+    assert '--tts-provider {ming,chatterbox,fish,breeze,breeze-gguf,audio8}' in help_text
     assert 'default: chatterbox' in help_text and 'breeze is English-only' in help_text
     assert '--tts-url' in help_text and 'for example http://127.0.0.1:8781' in help_text and 'you may use the reference voices' in help_text
     assert not home.exists()
@@ -37,7 +37,7 @@ def test_cli_wires_the_narrator_without_loading_any_models(tmp_path, monkeypatch
     monkeypatch.setattr(sys, 'argv', ['meread', '--home', str(tmp_path), *(['--tts-provider', provider] if provider else [])])
     __main__.main()
     engine = apps[0].state.pipeline.engine
-    assert engine.provider.name == (provider or 'chatterbox')
+    assert {engine.provider_for(language).name for language in speech.LANGUAGES} == {provider or 'chatterbox'}
     assert engine.narrator is engine.chatterbox is engine.multilingual is engine.designer is None
     identity = json.loads(apps[0].state.store.one('SELECT identity FROM generation_identity')['identity'])
     assert identity == speech.PROVIDERS[provider or 'chatterbox'].identity
@@ -95,6 +95,7 @@ def test_a_url_needs_consent_and_consent_needs_a_url_with_any_narrator(tmp_path,
     ('ming', 'this Mac with mlx-community/Ming-3.0-tts-0.5B-8bit'),
     ('chatterbox', 'the speech service at 127.0.0.1:8781'),
     ('breeze-gguf', 'the speech service at 127.0.0.1:8781'),
+    ('audio8', 'the speech service at 127.0.0.1:8781'),
     ('fish', 'this Mac with mlx-community/fish-audio-s2-pro-8bit'),
     ('breeze', 'this Mac with mlx-community/Breeze-TTS-2-mlx-4bit'),
 ])
@@ -115,6 +116,22 @@ def test_every_narrator_wires_the_speech_service_and_logs_where_work_runs_but_ne
     assert (f'Narrator {provider} on {narration},' in caplog.text and
             'voice design, emotion takes and speaker comparison on the speech service at 127.0.0.1:8781' in caplog.text)
     assert CONSENT not in caplog.text
+
+
+def test_by_default_a_speech_service_narrates_spanish_with_audio8_and_english_with_chatterbox(tmp_path, monkeypatch, caplog):
+    apps = []
+    caplog.set_level(logging.INFO)
+    monkeypatch.setattr(speech.Engine, '_snapshot', forbid_snapshot)
+    monkeypatch.setattr(uvicorn.Server, 'run', lambda self: apps.append(self.config.app))
+    monkeypatch.setattr(sys, 'argv', ['meread', '--home', str(tmp_path), '--tts-url', 'http://127.0.0.1:8781',
+                                      '--tts-consent', CONSENT])
+    __main__.main()
+    engine = apps[0].state.pipeline.engine
+    assert [engine.provider_for(language).name for language in ('en', 'es')] == ['chatterbox', 'audio8']
+    identity = json.loads(apps[0].state.store.one('SELECT identity FROM generation_identity')['identity'])
+    assert identity == engine.generation_identity and set(identity['narrators']) == {'en', 'es'}
+    assert 'Narrator chatterbox on the speech service at 127.0.0.1:8781, languages en;' in caplog.text
+    assert 'Narrator audio8 on the speech service at 127.0.0.1:8781, languages es;' in caplog.text
 
 
 def test_without_a_url_everything_is_logged_as_running_on_this_mac(tmp_path, monkeypatch, caplog):

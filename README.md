@@ -53,10 +53,10 @@ To find a book to try, [Project Gutenberg](https://www.gutenberg.org/) has free 
 
 ## Choose a narrator
 
-Chatterbox is the default narrator. It reads English and Spanish. Ming 3.0 0.5B 8-bit (English and Spanish), Fish (English and Spanish) and Breeze (English only) are also available:
+Chatterbox is the default English narrator. With a [GPU machine](docs/gpu-machine.md) that has Audio8 installed, Spanish books are read by Audio8 by default; without one, Chatterbox reads Spanish too. Choosing a narrator with `--tts-provider` uses it for every language. That is how you read English with Audio8, or keep Spanish on Chatterbox. Audio8 (English and Spanish, on the GPU machine only), Ming 3.0 0.5B 8-bit (English and Spanish), Fish (English and Spanish) and Breeze (English only) are also available:
 
 ```sh
-./start --tts-provider fish
+./start --tts-provider audio8
 ```
 
 [Narrators and voice models](docs/narrators.md) compares the narrators and lists every model me-read downloads.
@@ -80,7 +80,7 @@ Voice design and narration run on the Mac by default. If you also have a Linux m
 ## Limits
 
 - Books in English and Spanish. me-read detects the language at import. Dialogue can be in quotation marks (“…”, "…", «…», British ‘…’) or introduced by dashes (—Hola —dijo Ana—. ¿Vienes?).
-- Spanish emotions work with Chatterbox (the default) and `--tts-provider ming`. Breeze performs the emotion take in English; the narrator reads the book's Spanish lines from it. Delivery varies by voice; the Cast panel lets you hear and remake a take.
+- Spanish emotions work with Chatterbox, Audio8 and `--tts-provider ming`. Breeze performs the emotion take in English; the narrator reads the book's Spanish lines from it. Delivery varies by voice; the Cast panel lets you hear and remake a take.
 - Formatting inside paragraphs, such as italics, links, and images, is dropped.
 - One reader at a time. The server prepares the pages of whichever book reported its position last.
 - Machine voices make mistakes. A character may sound wrong, and the tagger sometimes picks the wrong speaker. Both are quick to correct.
@@ -92,6 +92,7 @@ me-read's code is under the [MIT licence](LICENSE). The models it downloads have
 | Model | Used for | Licence |
 |---|---|---|
 | Chatterbox and Chatterbox Turbo | narration (default) and speaker comparison | MIT |
+| Audio8 TTS Realistic Air | Spanish narration on a GPU machine, optional English narration | Apache 2.0 |
 | Ming 3.0 0.5B | optional narration | MIT |
 | Breeze TTS 2 | designing English voices, emotion takes, optional narrator | [BreezeBlue Research and Non-Commercial](https://huggingface.co/mlx-community/Breeze-TTS-2-mlx-4bit) |
 | Qwen3-TTS VoiceDesign | designing voices for other languages | Apache 2.0 |

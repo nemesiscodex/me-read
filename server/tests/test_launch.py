@@ -61,7 +61,7 @@ def test_without_a_gpu_machine_start_runs_everything_here(tmp_path, commands):
     assert install == ['pnpm', 'install', '--frozen-lockfile', '--silent']
     assert build == ['pnpm', 'build']
     assert '--tts-url' not in app and '--image-url' not in app
-    assert app[app.index('--tts-provider') + 1] == 'chatterbox'
+    assert '--tts-provider' not in app
     assert not (tmp_path / 'launcher.json').exists()
 
 

@@ -99,14 +99,14 @@ class SpeechServer:
         voice, model = body.get('voice'), body.get('model')
         if voice and body.get('consent_attestation') != self.consent:
             return failure(400, 'consent_required', 'consent_attestation is required')
-        if (model not in ('breeze', 'qwen', 'chatterbox') or (model == 'chatterbox' and not voice)
+        if (model not in ('breeze', 'qwen', 'chatterbox', 'audio8') or (model in ('chatterbox', 'audio8') and not voice)
                 or (model == 'qwen' and (voice or not body.get('instructions')))):
             return failure(400, 'invalid_request', f'{model} cannot take these fields')
         if voice is None:
             headers = {} if self.design_disclaimer is None else {'X-Crispasr-Spoken-Disclaimer': self.design_disclaimer}
             return 200, wav_bytes(self.sample_rate, seconds=20), 'audio/wav', headers
-        if model == 'breeze' and not body.get('ref_text'):
-            return failure(400, 'ref_text_required', 'a Breeze clone needs the transcript of its voice')
+        if model in ('breeze', 'audio8') and not body.get('ref_text'):
+            return failure(400, 'ref_text_required', f'a {model} clone needs the transcript of its voice')
         if self.broken or voice not in self.voices:
             return failure(500, 'synthesis_failed', 'the voice is unknown')
         # A take is a 15 second direction of the voice; a line is short.
@@ -760,6 +760,11 @@ PINNED_IDENTITY = {
                     'spoken_disclaimer': False, 'models': [
         {'id': 'cstr/breeze-tts-2-GGUF@q4_k'}, {'id': 'mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit'},
         {'id': 'mlx-community/whisper-large-v3-turbo-asr-fp16', 'revision': '624c19c9af5603fa73b83bce14d4aeea96156d18'}]},
+    'audio8': {'provider': 'audio8', 'policy': 1, 'transcription_policy': 'whisper-auto-language-16khz-v1',
+               'spoken_disclaimer': False, 'models': [
+        {'id': 'Edge0/Audio8-TTS-Realistic-Air', 'revision': '23c305cc013fde378edb459f538317043c993a74'},
+        {'id': 'mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit'},
+        {'id': 'mlx-community/whisper-large-v3-turbo-asr-fp16', 'revision': '624c19c9af5603fa73b83bce14d4aeea96156d18'}]},
 }
 
 
@@ -767,7 +772,7 @@ PINNED_IDENTITY = {
 def test_generation_identity_is_pinned_and_does_not_depend_on_where_the_models_run(tmp_path, provider):
     with_service = speech.Engine(tmp_path / 'hub', provider, tts_url='http://127.0.0.1:9', tts_consent=CONSENT)
     assert with_service.generation_identity == PINNED_IDENTITY[provider]
-    if provider != 'breeze-gguf':
+    if provider not in ('breeze-gguf', 'audio8'):
         assert speech.Engine(tmp_path / 'hub', provider).generation_identity == PINNED_IDENTITY[provider]
 
 
@@ -781,3 +786,85 @@ def test_moving_chatterbox_to_the_service_keeps_every_ready_clip(world, tmp_path
     engine = speech.Engine(tmp_path / 'hub', 'chatterbox', tts_url='http://127.0.0.1:9', tts_consent=CONSENT)
     moved = create_app(tmp_path, engine=engine, run_workers=False)
     assert moved.state.store.all('SELECT id, audio_state, audio_rev, duration FROM segment') == before
+
+
+class SpeechServerAddress:
+    url = 'http://127.0.0.1:9'
+
+
+def default_engine(tmp_path, server):
+    return speech.Engine(tmp_path / 'hub', tts_url=server.url, tts_consent=CONSENT)
+
+
+def gpu_engine_at(tmp_path, provider):
+    return gpu_engine(tmp_path, SpeechServerAddress, provider)
+
+
+def test_by_default_the_service_narrates_english_with_chatterbox_and_spanish_with_audio8(tmp_path, models, speech_server):
+    voice = recording(tmp_path / 'voice.wav')
+    models.transcript = 'The saved words.'
+    engine = default_engine(tmp_path, speech_server)
+    engine.speak('Hello.', voice, 42, language='en')
+    engine.speak('Hola.', voice, 43, language='es')
+    name = name_for(voice.read_bytes())
+    assert speech_server.speeches == [
+        asked(model='chatterbox', input='Hello.', voice=name, language='en', seed=42),
+        asked(model='audio8', input='Hola.', voice=name, language='es', ref_text='The saved words.', seed=43)]
+    assert len(speech_server.uploads) == 1, 'one upload serves both narrators'
+    assert models.loads == [speech.TRANSCRIBER], 'Whisper only for the Audio8 line'
+
+
+def test_audio8_can_narrate_english_too_when_chosen(tmp_path, models, speech_server):
+    models.transcript = 'The saved words.'
+    engine = gpu_engine(tmp_path, speech_server, 'audio8')
+    engine.speak('Hello.', recording(tmp_path / 'voice.wav'), 42, language='en')
+    assert [(call['model'], call['language'], call['ref_text']) for call in speech_server.speeches] == [
+        ('audio8', 'en', 'The saved words.')]
+
+
+def test_a_rambling_audio8_line_is_retaken_with_the_next_seed(tmp_path, models, speech_server):
+    speech_server.replies = [wav_bytes(seconds=9), wav_bytes(seconds=0.5)]
+    audio, rate = gpu_engine(tmp_path, speech_server, 'audio8').speak('Hola.', recording(tmp_path / 'voice.wav'), 42, language='es')
+    assert [call['seed'] for call in speech_server.speeches] == [42, 43] and len(audio) == rate // 2
+
+
+def test_without_a_service_spanish_stays_with_chatterbox_on_this_mac(tmp_path):
+    engine = speech.Engine(tmp_path / 'hub')
+    assert [engine.provider_for(language).name for language in ('en', 'es')] == ['chatterbox', 'chatterbox']
+    assert engine.generation_identity == PINNED_IDENTITY['chatterbox']
+
+
+def test_with_a_service_the_default_identity_names_each_languages_narrator(tmp_path):
+    identity = default_engine(tmp_path, SpeechServerAddress).generation_identity
+    assert identity == {'narrators': {'en': PINNED_IDENTITY['chatterbox'], 'es': PINNED_IDENTITY['audio8']}}
+
+
+def test_choosing_a_narrator_overrides_the_language_defaults(tmp_path):
+    for choice in ('chatterbox', 'audio8'):
+        engine = gpu_engine_at(tmp_path, choice)
+        assert {engine.provider_for(language).name for language in ('en', 'es')} == {choice}
+        assert engine.generation_identity == PINNED_IDENTITY[choice]
+
+
+def test_switching_the_spanish_default_regenerates_only_spanish_clips(world, tmp_path):
+    from meread.app import create_app
+    from conftest import SPANISH, make_epub
+
+    spanish = world.client.post('/api/books', files={'file': ('es.epub', make_epub((SPANISH,)), 'application/epub+zip')}).json()
+    for book in (world.book, spanish):
+        world.client.post(f"/api/books/{book['id']}/focus", json={'first': 0, 'last': 0, 'current_first': 0, 'current_last': 0})
+        world.pipeline.set_focus(book['id'], 0, 0, 0, 0)
+        world.drain()
+    english_before = world.store.all("SELECT id, audio_state, audio_rev FROM segment WHERE book_id = ?", (world.book['id'],))
+    spanish_before = world.store.all("SELECT id, audio_state, audio_rev FROM segment WHERE book_id = ?", (spanish['id'],))
+    assert any(clip['audio_state'] == 'ready' for clip in english_before) and any(clip['audio_state'] == 'ready' for clip in spanish_before)
+
+    engine = default_engine(tmp_path, SpeechServerAddress)
+    reopened = create_app(tmp_path, engine=engine, run_workers=False)
+    assert reopened.state.store.all("SELECT id, audio_state, audio_rev FROM segment WHERE book_id = ?", (world.book['id'],)) == english_before
+    after = reopened.state.store.all("SELECT id, audio_state, audio_rev FROM segment WHERE book_id = ?", (spanish['id'],))
+    assert after and all(clip['audio_state'] == 'none' and clip['audio_rev'] > before['audio_rev']
+                         for clip, before in zip(after, spanish_before))
+
+    again = create_app(tmp_path, engine=default_engine(tmp_path, SpeechServerAddress), run_workers=False)
+    assert again.state.store.all("SELECT id, audio_state, audio_rev FROM segment WHERE book_id = ?", (spanish['id'],)) == after

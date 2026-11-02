@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from meread import images, scenes
+from meread import images, scenes, speech
 from meread.app import create_app
 
 PARAGRAPHS = [
@@ -49,6 +49,11 @@ def make_epub(chapters=(PARAGRAPHS, CHAPTER_TWO)):
 
 class FakeEngine:
     """Stands in for the speech models: records what it was asked and returns short tones."""
+
+    provider = speech.PROVIDERS['chatterbox']
+
+    def provider_for(self, language):
+        return self.provider
 
     def __init__(self):
         self.designed, self.others, self.spoken, self.during_speak, self.languages = [], [], [], None, set()

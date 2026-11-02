@@ -5,6 +5,7 @@ The speech service for me-read. It runs on the machine with the GPU and does me-
 - `breeze`: Breeze TTS 2 designs English voices from a description, clones a voice, and directs how a line is said (the emotion takes).
 - `qwen`: Qwen3-TTS 1.7B VoiceDesign designs voices for books in other languages.
 - `chatterbox`: Chatterbox narrates in an uploaded voice. English uses Chatterbox Turbo, other languages Chatterbox Multilingual.
+- `audio8`: Audio8 TTS Realistic Air narrates English and Spanish in an uploaded voice and its transcript. Optional; see [Install Audio8](#install-audio8).
 
 Breeze and Qwen run in [CrispASR](https://github.com/CrispStrobe/CrispASR) processes that the service starts and stops. Chatterbox runs inside the service with the ROCm build of PyTorch. Breeze and Qwen in PyTorch were tried and rejected: Breeze took 8 to 9 seconds of work per second of audio (and fp16 failed), Qwen 4.5 to 6.6.
 
@@ -22,6 +23,7 @@ Measured on that card, in seconds of work per second of audio, one request at a 
 | `qwen` design | 0.8 |
 | `chatterbox` English (Turbo) | 0.3, and about 1.0 for the first line in a new voice |
 | `chatterbox` other languages (Multilingual) | 0.8 |
+| `audio8` clone, float16 | 1.1 (1.1 to 1.5 for the first line after loading). bfloat16 is 2.9. |
 
 Loading a model on first use adds 1 to 2 seconds for Breeze or Qwen, and 5 to 15 seconds for a Chatterbox model.
 
@@ -76,6 +78,17 @@ hf ResembleAI/chatterbox --revision 5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18 --l
   --include grapheme_mtl_merged_expanded_v1.json --include Cangjie5_TC.json --include conds.pt
 ```
 
+## Install Audio8
+
+Optional. Audio8 TTS Realistic Air (0.6B, Apache 2.0, 44.1 kHz) needs transformers below 5, and the service's own environment has transformers 5. So it runs in a worker process, `audio8_worker.py`, with its own Python environment that borrows the service's ROCm PyTorch. Run the service once so that `.venv` exists, then:
+
+```sh
+cd ~/me-read-speech
+bash setup-audio8.sh
+```
+
+That creates `.venv-audio8` (about 160 MB) and downloads the checkpoint at revision `23c305cc013fde378edb459f538317043c993a74` into `models/audio8-air` (2.4 GB). Restart the service. Without both, `audio8` requests answer 400 `model_not_installed` and everything else works as before. The worker runs in float16 because the RX 6900 XT does not accelerate bfloat16.
+
 ## Run
 
 Needs [uv](https://docs.astral.sh/uv/) and a user in the `video` and `render` groups. Copy this folder to `~/me-read-speech`, then:
@@ -96,6 +109,7 @@ Flags, all optional:
 | `--models` | `~/me-read-speech/models` | the model files above |
 | `--crispasr` | `~/me-read-speech/build/bin/crispasr` | the CrispASR binary |
 | `--crispasr-library-path` | none | `LD_LIBRARY_PATH` for CrispASR only, for example `/opt/rocm/lib`. PyTorch brings its own ROCm libraries. |
+| `--audio8-python` | `~/me-read-speech/.venv-audio8/bin/python` | the Python of the Audio8 environment |
 | `--budget-gb` | `13` | how much GPU memory the loaded models may use, by estimate |
 | `--load-wait` | `60` | seconds a request waits for its model to load before it gets a 503 |
 
@@ -127,7 +141,7 @@ uv run --frozen python check.py http://127.0.0.1:8781 /tmp/speech-check EN.wav "
 
 ## GPU memory
 
-The four models do not fit on a 16 GB card together. The service loads each one on first use. Before loading, it unloads the least recently used model until the estimated total fits `--budget-gb`. A CrispASR model is unloaded by stopping its process, and a Chatterbox model by dropping it and emptying PyTorch's cache.
+The models do not fit on a 16 GB card together. The service loads each one on first use. Before loading, it unloads the least recently used model until the estimated total fits `--budget-gb`. A CrispASR model is unloaded by stopping its process, and a Chatterbox model by dropping it and emptying PyTorch's cache.
 
 | model | estimate |
 |---|---|
@@ -135,8 +149,9 @@ The four models do not fit on a 16 GB card together. The service loads each one 
 | Qwen (CrispASR) | 2.9 GB |
 | Chatterbox Turbo | 4.5 GB |
 | Chatterbox Multilingual | 5.5 GB |
+| Audio8 | 4.0 GB (3.1 GB measured) |
 
-With the default 13 GB, any three fit except Breeze, Turbo and Multilingual together, and loading the fourth model always unloads one.
+With the default 13 GB, loading another model often unloads the least recently used one.
 
 ## Sharing the GPU with the image service
 
@@ -167,30 +182,31 @@ JSON:
 
 | field | meaning |
 |---|---|
-| `model` | `breeze`, `qwen` or `chatterbox`. Required. |
+| `model` | `breeze`, `qwen`, `chatterbox` or `audio8`. Required. |
 | `input` | the text to speak. Required. |
-| `voice` | an uploaded voice. Required for `chatterbox`. With `breeze` it makes a clone, or a direction when `instructions` is also given. Not allowed with `qwen`. |
-| `ref_text` | what the voice's WAV says, for `breeze`. Without it the uploaded transcript is used. |
-| `instructions` | a voice description (design) or how to say the line (direction). Required for `qwen`. With `breeze`, no voice means design and a voice means direction. Not allowed with `chatterbox`. |
+| `voice` | an uploaded voice. Required for `chatterbox` and `audio8`. With `breeze` it makes a clone, or a direction when `instructions` is also given. Not allowed with `qwen`. |
+| `ref_text` | what the voice's WAV says, for `breeze` and `audio8`. Without it the uploaded transcript is used. |
+| `instructions` | a voice description (design) or how to say the line (direction). Required for `qwen`. With `breeze`, no voice means design and a voice means direction. Not allowed with `chatterbox` and `audio8`. |
 | `cfg_scale` | `breeze` only. me-read sends 4 when it designs a voice and 1 when it directs a take. |
-| `language` | ISO code such as `en` or `es`. `chatterbox` uses Turbo for `en`, which is the default, and Multilingual otherwise. `qwen` speaks it. |
-| `seed` | integer. The same seed and inputs give the same audio samples. |
+| `language` | ISO code such as `en` or `es`. `chatterbox` uses Turbo for `en`, which is the default, and Multilingual otherwise. `qwen` speaks it. `audio8` accepts `en` and `es`. |
+| `seed` | integer. The same seed and inputs give the same audio samples, except that the first `audio8` request after the model loads comes out slightly different. |
 | `consent_attestation` | required whenever `voice` is given. Sent to CrispASR as both its consent and its marking statement. |
 | `spoken_disclaimer` | me-read sends `false`. Passed to CrispASR. |
 | `response_format` | `wav` |
 
-Answers 200 with a 24 kHz mono 16-bit WAV. When the request names a voice, the reply has `X-Crispasr-Spoken-Disclaimer: skipped`. If CrispASR ever put its spoken disclaimer into the audio, the service answers 502 `disclaimer_applied` instead of returning it.
+Answers 200 with a mono 16-bit WAV, 24 kHz except `audio8`, which answers 44.1 kHz. When the request names a voice, the reply has `X-Crispasr-Spoken-Disclaimer: skipped`. If CrispASR ever put its spoken disclaimer into the audio, the service answers 502 `disclaimer_applied` instead of returning it.
 
 Errors:
 
 | status and code | when |
 |---|---|
-| 400 `unknown_model` | `model` is not one of the three |
+| 400 `unknown_model` | `model` is not one of the four |
+| 400 `model_not_installed` | `audio8` without its environment and checkpoint |
 | 400 `missing_required_field` | a field the model needs is missing |
 | 400 `invalid_request` | a field the model does not take is given, or a field is malformed |
 | 400 `consent_required` | `voice` without `consent_attestation` |
-| 400 `ref_text_required` | `breeze` with a voice, no `ref_text` and no uploaded transcript |
-| 400 `unsupported_language` | `chatterbox` does not speak `language` |
+| 400 `ref_text_required` | `breeze` or `audio8` with a voice, no `ref_text` and no uploaded transcript |
+| 400 `unsupported_language` | `chatterbox` or `audio8` does not speak `language` |
 | 500 `synthesis_failed` | the voice is not uploaded, or the model failed. me-read uploads the voice again on this. |
 | 500 `load_failed` | the model could not load |
 | 503 `loading` | the model is still loading |

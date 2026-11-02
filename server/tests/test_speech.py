@@ -113,7 +113,7 @@ def models(monkeypatch):
 def test_ming_clones_the_saved_voice_in_english_and_spanish_with_one_transcript(tmp_path, models):
     voice = recording(tmp_path / 'voice.wav')
     engine = speech.Engine(tmp_path / 'hub', 'ming')
-    assert engine.provider.name == 'ming'
+    assert engine.provider_for('es').name == engine.provider_for('en').name == 'ming'
     for language, text in [('en', 'Hello.'), ('es', 'Hola.')]:
         audio, rate = engine.speak(text, voice, 42, language=language)
         assert rate == 44100 and audio.shape == (22050,) and audio.dtype == np.float32
@@ -294,8 +294,8 @@ def test_breeze_rejects_spanish_before_reading_the_reference_or_loading_any_mode
 
 
 @pytest.mark.parametrize('provider', speech.PROVIDERS)
-def test_spanish_emotion_takes_are_offered_with_ming_and_chatterbox(provider):
-    assert speech.PROVIDERS[provider].emotions('es') == (speech.EMOTIONS if provider in ('ming', 'chatterbox') else ('neutral',))
+def test_spanish_emotion_takes_are_offered_with_ming_chatterbox_and_audio8(provider):
+    assert speech.PROVIDERS[provider].emotions('es') == (speech.EMOTIONS if provider in ('ming', 'chatterbox', 'audio8') else ('neutral',))
     assert speech.PROVIDERS[provider].emotions('en') == speech.EMOTIONS
 
 

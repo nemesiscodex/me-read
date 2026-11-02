@@ -29,8 +29,10 @@ DESIGNER = 'mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit'
 MULTILINGUAL = 'mlx-community/chatterbox-8bit'
 BREEZE = 'mlx-community/Breeze-TTS-2-mlx-4bit'
 MING = 'mlx-community/Ming-3.0-tts-0.5B-8bit'
-MODEL_REVISIONS = {MING: 'd0d1da6f627e4b3f20cc2db6ba4aee86d45343ad'}
+AUDIO8 = 'Edge0/Audio8-TTS-Realistic-Air'
+MODEL_REVISIONS = {MING: 'd0d1da6f627e4b3f20cc2db6ba4aee86d45343ad', AUDIO8: '23c305cc013fde378edb459f538317043c993a74'}
 DEFAULT_PROVIDER = 'chatterbox'
+LANGUAGES = ('en', 'es')
 TRANSCRIBER = 'mlx-community/whisper-large-v3-turbo-asr-fp16'
 TRANSCRIBER_REVISION = '624c19c9af5603fa73b83bce14d4aeea96156d18'
 TRANSCRIPTION_POLICY = 'whisper-auto-language-16khz-v1'
@@ -53,7 +55,7 @@ class Provider:
     reference_silence: float = 0
 
     def emotions(self, language):
-        if language == 'en' or (language == 'es' and self.name in ('ming', 'chatterbox')):
+        if language == 'en' or (language == 'es' and self.name in ('ming', 'chatterbox', 'audio8')):
             return EMOTIONS
         return ('neutral',)
 
@@ -72,6 +74,8 @@ class Provider:
         if self.languages is None or language in self.languages:
             return
         name = self.name.capitalize()
+        if self.languages != ('en',):
+            raise ValueError(f'{name} narrates {" and ".join(self.languages)} only, and this book is in {language}.')
         if language == 'es':
             raise ValueError(f'{name} narrates English only. For Spanish, restart with --tts-provider ming, --tts-provider chatterbox '
                              'or --tts-provider fish.')
@@ -84,7 +88,17 @@ PROVIDERS = {
     'fish': Provider('fish', ('mlx-community/fish-audio-s2-pro-8bit',), None, 'waveform'),
     'breeze': Provider('breeze', (BREEZE,), ('en',), 'path'),
     'breeze-gguf': Provider('breeze-gguf', ('cstr/breeze-tts-2-GGUF@q4_k',), ('en',), 'remote', 'breeze'),
+    'audio8': Provider('audio8', (AUDIO8,), ('en', 'es'), 'remote', 'audio8', retakes=3),
 }
+
+
+def narrators(choice, service):
+    """The provider that narrates each language. A chosen provider narrates them all. By default English uses
+    Chatterbox and Spanish uses Audio8, which only the GPU speech service can run, so without one Spanish stays
+    on Chatterbox."""
+    if choice:
+        return {language: PROVIDERS[choice] for language in LANGUAGES}
+    return {'en': PROVIDERS[DEFAULT_PROVIDER], 'es': PROVIDERS['audio8' if service else DEFAULT_PROVIDER]}
 
 
 class Raw(NamedTuple):
@@ -286,7 +300,7 @@ class Remote:
 
     def __init__(self, url, consent):
         if not url:
-            raise ValueError('--tts-url is required with --tts-provider breeze-gguf and with --tts-consent, '
+            raise ValueError('--tts-url is required with --tts-provider audio8 or breeze-gguf and with --tts-consent, '
                              'for example http://127.0.0.1:8781')
         if not consent or not consent.strip():
             raise ValueError('--tts-consent is required with --tts-url. Write your own statement about the reference '
@@ -386,9 +400,9 @@ class Remote:
 
 
 def connect(provider, url, consent):
-    """The GPU speech service when an address or consent was given, which breeze-gguf cannot narrate without, else
-    None. Raises ValueError when the settings are missing or unusable."""
-    if url is None and consent is None and PROVIDERS[provider].reference != 'remote':
+    """The GPU speech service when an address or consent was given, which audio8 and breeze-gguf cannot narrate
+    without, else None. Raises ValueError when the settings are missing or unusable."""
+    if url is None and consent is None and (provider is None or PROVIDERS[provider].reference != 'remote'):
         return None
     return Remote(url, consent)
 
@@ -456,9 +470,9 @@ class Engine:
     """The selected narrator, Breeze to design English voices and direct takes, the Qwen3 voice designer for other
     languages, and Chatterbox to tell voices apart. One worker owns all model calls."""
 
-    def __init__(self, models_dir, tts_provider=DEFAULT_PROVIDER, tts_url=None, tts_consent=None):
-        self.provider = PROVIDERS[tts_provider]
+    def __init__(self, models_dir, tts_provider=None, tts_url=None, tts_consent=None):
         self.remote = connect(tts_provider, tts_url, tts_consent)
+        self.narrators = narrators(tts_provider, self.remote is not None)
         self.hub = Path(models_dir)
         self.hub.mkdir(parents=True, exist_ok=True)
         os.environ['HF_HUB_CACHE'] = str(self.hub)
@@ -470,12 +484,27 @@ class Engine:
         self.raw = Raw(design=self._gpu_design if gpu else self._mlx_design,
                        take=self._gpu_take if gpu else self._mlx_take,
                        speaker=self._gpu_speaker if gpu else self._mlx_speaker,
-                       line=self._gpu_line if gpu and self.provider.service else
-                       self._mlx_line if self.provider.reference == 'conditionals' else self._mlx_reference_line)
+                       line=self._line)
+
+    def provider_for(self, language):
+        """The narrator that reads books in `language`."""
+        return self.narrators.get(language) or self.narrators['en']
 
     @property
     def generation_identity(self):
-        return self.provider.identity
+        """The narrator's identity, or each language's when they differ."""
+        identities = {language: provider.identity for language, provider in self.narrators.items()}
+        if all(identity == identities['en'] for identity in identities.values()):
+            return identities['en']
+        return {'narrators': identities}
+
+    def _line(self, text, voice_path, seed, language):
+        provider = self.provider_for(language)
+        if self.remote is not None and provider.service:
+            return self._gpu_line(text, voice_path, seed, language)
+        if provider.reference == 'conditionals':
+            return self._mlx_line(text, voice_path, seed, language)
+        return self._mlx_reference_line(text, voice_path, seed, language)
 
     def _snapshot(self, repo, revision=None):
         from huggingface_hub import snapshot_download
@@ -506,7 +535,7 @@ class Engine:
     def _breeze(self):
         from mlx_audio.tts.utils import load_model
         # The Breeze narrator designs and directs too; a second copy would only take memory.
-        if self.provider.models[0] == BREEZE:
+        if any(provider.models[0] == BREEZE for provider in self.narrators.values()):
             if self.narrator is None:
                 self.narrator = load_model(self._snapshot(BREEZE))
             return self.narrator
@@ -674,7 +703,7 @@ class Engine:
         key = (hashlib.sha256(wav).hexdigest(), TRANSCRIBER, TRANSCRIBER_REVISION, TRANSCRIPTION_POLICY)
         return self._cached(self.transcripts, key, transcribe)
 
-    def _reference(self, voice_path):
+    def _reference(self, voice_path, provider):
         from mlx_audio.tts.utils import load_model
         from mlx_audio.utils import load_audio
 
@@ -683,28 +712,28 @@ class Engine:
         def prepare():
             text = self._transcript(wav)
             if self.narrator is None:
-                self.narrator = load_model(self._snapshot(self.provider.models[0]))
-            if self.provider.reference != 'waveform':
+                self.narrator = load_model(self._snapshot(provider.models[0]))
+            if provider.reference != 'waveform':
                 return Reference(wav, text)
             with tempfile.TemporaryDirectory() as tmp:
                 path = Path(tmp) / 'reference.wav'
                 path.write_bytes(wav)
                 return Reference(wav, text, load_audio(str(path), sample_rate=self.narrator.sample_rate))
-        return self._cached(self.voices, (self.provider.name, self.provider.models, hashlib.sha256(wav).hexdigest()),
-                            prepare)
+        return self._cached(self.voices, (provider.name, provider.models, hashlib.sha256(wav).hexdigest()), prepare)
 
     def _mlx_reference_line(self, text, voice_path, seed, language):
         import mlx.core as mx
-        reference = self._reference(voice_path)
+        provider = self.provider_for(language)
+        reference = self._reference(voice_path, provider)
         model = self.narrator
         mx.random.seed(seed)
-        if self.provider.reference == 'waveform':
+        if provider.reference == 'waveform':
             return self._generate(model.generate(text=text, ref_audio=reference.waveform, ref_text=reference.text,
                                                  stream=False), model.sample_rate)
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'reference.wav'
-            path.write_bytes(with_silence(reference.wav, self.provider.reference_silence))
-            options = {'lang_code': language} if self.provider.name == 'ming' else {}
+            path.write_bytes(with_silence(reference.wav, provider.reference_silence))
+            options = {'lang_code': language} if provider.name == 'ming' else {}
             return self._generate(model.generate(text=text, ref_audio=str(path), ref_text=reference.text, seed=seed,
                                                  stream=False, **options), model.sample_rate)
 
@@ -730,8 +759,11 @@ class Engine:
 
     def _gpu_line(self, text, voice_path, seed, language):
         wav = Path(voice_path).read_bytes()
-        if self.provider.service == 'chatterbox':
+        service = self.provider_for(language).service
+        if service == 'chatterbox':
             return self._cloned('chatterbox', wav, text, seed, language=language)
+        if service == 'audio8':
+            return self._cloned('audio8', wav, text, seed, language=language, ref_text=self._transcript(wav))
         return self._cloned('breeze', wav, text, seed, ref_text=self._transcript(wav))
 
     def _cloned(self, model, wav, text, seed, **fields):
@@ -772,7 +804,8 @@ class Engine:
         With `semitones`, the model clones the sample shifted by that many and each clip is shifted back. A model that
         clones a very high take speaks it in two voices at once; cloning it lower and raising the clip avoids that.
         """
-        self.provider.validate_language(language)
+        provider = self.provider_for(language)
+        provider.validate_language(language)
         words = len(text.split())
         with tempfile.TemporaryDirectory() as tmp:
             reference = voice_path
@@ -780,7 +813,7 @@ class Engine:
                 reference = Path(tmp) / 'reference.wav'
                 reference.write_bytes(self._moved(voice_path, semitones))
             # A short line sometimes rambles on past its text; a clip far longer than its words is retaken.
-            for attempt in range(self.provider.retakes):
+            for attempt in range(provider.retakes):
                 audio, rate = self.raw.line(text, reference, seed + attempt, language)
                 audio = trim(shifted(audio, -semitones), rate)
                 if len(audio) / rate <= 2.5 + words * 0.9:

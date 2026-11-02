@@ -1,4 +1,4 @@
-"""Speech service for me-read: Breeze, Qwen voice design and Chatterbox behind one HTTP API. It runs on the machine with the GPU."""
+"""Speech service for me-read: Breeze, Qwen voice design, Chatterbox and Audio8 behind one HTTP API. It runs on the machine with the GPU."""
 import argparse
 import base64
 import binascii
@@ -34,6 +34,7 @@ NAME = re.compile(r'[A-Za-z0-9_-]{1,64}')
 DISCLAIMER = 'X-Crispasr-Spoken-Disclaimer'
 UPLOAD_LIMIT = 50 * 1024 * 1024
 # Chatterbox Multilingual's language ids; English goes to Turbo.
+AUDIO8_LANGUAGES = {'en', 'es'}
 CHATTERBOX_LANGUAGES = {'ar', 'da', 'de', 'el', 'en', 'es', 'fi', 'fr', 'he', 'hi', 'it', 'ja', 'ko', 'ms', 'nl', 'no',
                         'pl', 'pt', 'ru', 'sv', 'sw', 'tr', 'zh'}
 
@@ -246,7 +247,19 @@ def engines(args):
                                            '-m', str(models / 'qwen3-tts-12hz-1.7b-voicedesign-q8_0.gguf')], env)),
         'chatterbox-turbo': Engine(4.5, lambda: Cloner(models / 'chatterbox-turbo', turbo=True)),
         'chatterbox-multilingual': Engine(5.5, lambda: Cloner(models / 'chatterbox-multilingual', turbo=False)),
+        **audio8_engines(args, env),
     }
+
+
+def audio8_engines(args, env):
+    """Audio8 when its environment and checkpoint are installed. It needs transformers below 5, so it runs in its
+    own process with its own Python, like a CrispASR model."""
+    model = args.models / 'audio8-air'
+    if not (args.audio8_python.is_file() and (model / 'model.safetensors').is_file()):
+        return {}
+    worker = Path(__file__).with_name('audio8_worker.py')
+    return {'audio8': Engine(4.0, lambda: Child([str(args.audio8_python), str(worker), '--model', str(model),
+                                                 '--voice-dir', str(args.voices)], env))}
 
 
 def required_files(args):
@@ -276,6 +289,8 @@ MODELS = {
     'qwen': Rules(voice='forbidden', instructions='required', cfg_scale=False, engine=lambda r: 'qwen'),
     'chatterbox': Rules(voice='required', instructions='forbidden', cfg_scale=False,
                         engine=lambda r: chatterbox_engine(r.language)),
+    'audio8': Rules(voice='required', instructions='forbidden', cfg_scale=False, engine=lambda r: 'audio8',
+                    voice_needs_transcript=True),
 }
 
 
@@ -296,6 +311,10 @@ def check(request):
             raise Problem(400, 'invalid_voice', 'voice must be 1 to 64 letters, digits, - or _')
         if not (request.consent_attestation or '').strip():
             raise Problem(400, 'consent_required', 'a request that names a voice needs consent_attestation')
+    if request.model == 'audio8':
+        request.language = request.language or 'en'
+        if request.language not in AUDIO8_LANGUAGES:
+            raise Problem(400, 'unsupported_language', f'audio8 speaks {", ".join(sorted(AUDIO8_LANGUAGES))}')
     if request.model == 'chatterbox':
         request.language = request.language or 'en'
         if request.language not in CHATTERBOX_LANGUAGES:
@@ -450,6 +469,9 @@ def create_app(loader, voices):
         if voice and rules.voice_needs_transcript and not (request.ref_text or voice.transcript):
             raise Problem(400, 'ref_text_required', f'{request.model} needs ref_text, or a transcript uploaded with the voice')
         name = rules.engine(request)
+        if name not in loader.engines:
+            raise Problem(400, 'model_not_installed', f'{request.model} is not installed on this speech service. '
+                          'Install it as speech-service/README.md describes, or start me-read with --tts-provider chatterbox.')
         with loader.lock:
             engine = loader.get(name)
             start = time.perf_counter()
@@ -489,6 +511,8 @@ def main():
     parser.add_argument('--crispasr', type=Path, default=home / 'build/bin/crispasr', help='the CrispASR binary')
     parser.add_argument('--crispasr-library-path', default='',
                         help='LD_LIBRARY_PATH for CrispASR only; PyTorch brings its own ROCm libraries')
+    parser.add_argument('--audio8-python', type=Path, default=home / '.venv-audio8/bin/python',
+                        help='the Python of the Audio8 environment, see README; without it and its checkpoint Audio8 is off')
     parser.add_argument('--budget-gb', type=float, default=13, help='estimated GPU memory the loaded models may use')
     parser.add_argument('--load-wait', type=float, default=60,
                         help='seconds a request waits for a model to load before it gets a 503')

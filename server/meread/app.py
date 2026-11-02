@@ -152,22 +152,25 @@ class Hub:
             self.listeners[book_id].discard(queue)
 
 
-def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers=True, tts_provider=speech.DEFAULT_PROVIDER,
+def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers=True, tts_provider=None,
                tts_url=None, tts_consent=None):
-    provider = speech.PROVIDERS[tts_provider]
     store = Store(home)
     hub = Hub()
     engine = engine or speech.Engine(Path(home) / 'models/hub', tts_provider=tts_provider, tts_url=tts_url, tts_consent=tts_consent)
-    identity = getattr(engine, 'generation_identity', provider.identity)
-    changed = store.reconcile_generation(identity, speech.PROVIDERS['chatterbox'].identity)
-    selected = speech.PROVIDERS[identity['provider']]
+    identity = getattr(engine, 'generation_identity', speech.PROVIDERS[tts_provider or speech.DEFAULT_PROVIDER].identity)
+    changed = store.reconcile_generation(identity, speech.PROVIDERS[speech.DEFAULT_PROVIDER].identity)
     remote = getattr(engine, 'remote', None)
     service = f'the speech service at {remote.host}' if remote else None
-    logging.getLogger('meread').info(
-        'Narrator %s on %s, languages %s; voice design, emotion takes and speaker comparison on %s%s', selected.name,
-        service if service and selected.service else f"this Mac with {', '.join(selected.models)}",
-        ', '.join(selected.languages or ('any language the model accepts',)), service or 'this Mac',
-        '; cached narration invalidated' if changed else '')
+    narrators = {}
+    for language in speech.LANGUAGES:
+        narrators.setdefault(engine.provider_for(language).name, []).append(language)
+    for name, languages in narrators.items():
+        selected = speech.PROVIDERS[name]
+        logging.getLogger('meread').info(
+            'Narrator %s on %s, languages %s; voice design, emotion takes and speaker comparison on %s%s', selected.name,
+            service if service and selected.service else f"this Mac with {', '.join(selected.models)}",
+            ', '.join(selected.languages or ('any language the model accepts',)) if len(narrators) == 1 else ', '.join(languages),
+            service or 'this Mac', '; cached narration invalidated' if changed else '')
     pipeline = Pipeline(store, engine, publish=hub.publish, **({'ask': ask} if ask else {}), **({'draw': draw} if draw else {}))
 
     @asynccontextmanager

@@ -142,8 +142,8 @@ def gpu_host_for(args):
 
 def server_command(args):
     command = [sys.executable, '-m', 'meread', '--host', args.host, '--port', str(args.port),
-               '--home', str(args.home), '--tts-provider', args.tts_provider]
-    for name in ('tts_url', 'tts_consent', 'image_url'):
+               '--home', str(args.home)]
+    for name in ('tts_provider', 'tts_url', 'tts_consent', 'image_url'):
         value = getattr(args, name)
         if value is not None:
             command.extend(['--' + name.replace('_', '-'), value])
