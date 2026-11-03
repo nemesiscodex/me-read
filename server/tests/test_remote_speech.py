@@ -761,12 +761,13 @@ PINNED_IDENTITY = {
                     'spoken_disclaimer': False, 'models': [
         {'id': 'cstr/breeze-tts-2-GGUF@q4_k'}, {'id': 'mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit'},
         {'id': 'mlx-community/whisper-large-v3-turbo-asr-fp16', 'revision': '624c19c9af5603fa73b83bce14d4aeea96156d18'}]},
-    'qwen-base': {'provider': 'qwen-base', 'policy': 1, 'transcription_policy': 'whisper-auto-language-16khz-v1', 'models': [
+    'qwen-base': {'provider': 'qwen-base', 'policy': 1, 'transcription_policy': 'whisper-auto-language-16khz-v1',
+                  'reference_silence': 1.0, 'cut_at_pause': True, 'models': [
         {'id': 'mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit', 'revision': '50f45ef0047cde7e84c2ef04326acb8ada2436a7'},
         {'id': 'mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit'},
         {'id': 'mlx-community/whisper-large-v3-turbo-asr-fp16', 'revision': '624c19c9af5603fa73b83bce14d4aeea96156d18'}]},
     'qwen-base-gpu': {'provider': 'qwen-base-gpu', 'policy': 1, 'transcription_policy': 'whisper-auto-language-16khz-v1',
-                      'spoken_disclaimer': False, 'models': [
+                      'spoken_disclaimer': False, 'reference_silence': 1.0, 'cut_at_pause': True, 'models': [
         {'id': 'Qwen/Qwen3-TTS-12Hz-0.6B-Base', 'revision': '5d83992436eae1d760afd27aff78a71d676296fc'},
         {'id': 'mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit'},
         {'id': 'mlx-community/whisper-large-v3-turbo-asr-fp16', 'revision': '624c19c9af5603fa73b83bce14d4aeea96156d18'}]},
@@ -837,8 +838,10 @@ def test_qwen_base_gpu_narrates_on_the_service_with_the_transcript_and_language(
     engine = gpu_engine(tmp_path, speech_server, 'qwen-base-gpu')
     voice = recording(tmp_path / 'voice.wav')
     engine.speak('Hola.', voice, 42, language='es')
-    assert speech_server.speeches == [asked(model='qwen-base', input='Hola.', voice=name_for(voice.read_bytes()), language='es',
+    padded = speech.with_silence(voice.read_bytes(), 1.0)
+    assert speech_server.speeches == [asked(model='qwen-base', input='Hola.', voice=name_for(padded), language='es',
                                             ref_text='The saved words.', seed=42)]
+    assert speech_server.voices == {name_for(padded): padded}, 'the service gets the voice followed by a second of silence'
     assert models.loads == [speech.TRANSCRIBER], 'Whisper here, the model on the service'
 
 

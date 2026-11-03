@@ -102,6 +102,8 @@ bash setup-qwen.sh
 
 That creates `.venv-qwen` (about 560 MB) and downloads the checkpoint at revision `5d83992436eae1d760afd27aff78a71d676296fc` into `models/qwen3-tts-base` (2.4 GB). Restart the service. Without both, `qwen-base` requests answer 400 `model_not_installed`.
 
+The worker stops a line after 3.5 seconds plus one second per word. The model's own limit is nearly eleven minutes, and a line that never ends would hold the GPU, and the request, that long. A clip cut off at the limit is longer than me-read's limit, so me-read retakes it.
+
 The worker runs in float16 with one change. The model's code predictor, a small network that fills in the other codebooks of each audio frame, computes `act(gate) * up` in its MLP, and that product passes the float16 maximum of 65504 and becomes `inf`. Sampling from it crashes the GPU with a hardware exception, which kills the worker process; the service then starts it again and the request fails. The worker keeps that network's layers in float32 and everything else in float16. Four short English and Spanish clips were checked this way. A different input could overflow somewhere else, and such a crash fails one clip, which me-read retries.
 
 ## Run

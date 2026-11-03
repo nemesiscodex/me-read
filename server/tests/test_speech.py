@@ -138,11 +138,52 @@ def test_qwen_base_clones_the_saved_voice_by_language_name_with_one_transcript(t
     for language, name, text in [('en', 'English', 'Hello.'), ('es', 'Spanish', 'Hola.'), ('fr', 'auto', 'Bonjour.')]:
         audio, rate = engine.speak(text, voice, 42, language=language)
         assert rate == 24000 and audio.shape == (12000,) and audio.dtype == np.float32
-        assert models.spoken[-1] == {'text': text, 'wav': voice.read_bytes(), 'ref_text': 'Primera frase.', 'seed': 42,
-                                     'stream': False, 'language': name}
+        assert models.spoken[-1] == {'text': text, 'wav': speech.with_silence(voice.read_bytes(), 1.0),
+                                     'ref_text': 'Primera frase.', 'seed': 42, 'stream': False, 'language': name}
     assert models.loads == [speech.TRANSCRIBER, speech.QWEN_BASE]
     assert models.snapshots[-1] == (speech.QWEN_BASE, None)
     assert len(models.transcribed) == 1
+
+
+def speech_with_pauses(path, parts, rate=24000):
+    """A WAV of tone bursts, each part a (seconds, loud) pair, loud or silent."""
+    audio = np.concatenate([np.full(int(rate * seconds), 0.3 if loud else 0.0, dtype='float32') for seconds, loud in parts])
+    sf.write(path, audio, rate, format='WAV', subtype='PCM_16')
+    return path
+
+
+def seconds_of(wav):
+    audio, rate = sf.read(io.BytesIO(wav))
+    return len(audio) / rate
+
+
+def test_a_sample_that_ends_mid_word_is_cut_at_its_last_pause(tmp_path):
+    wav = speech_with_pauses(tmp_path / 'v.wav', [(4, True), (0.4, False), (4, True), (0.4, False), (3, True)]).read_bytes()
+    assert seconds_of(speech.cut_at_pause(wav)) == pytest.approx(8.45, abs=0.03)
+
+
+@pytest.mark.parametrize('parts', [
+    [(4, True), (0.4, False), (4, True), (0.5, False)],
+    [(9, True)],
+    [(2, True), (0.4, False), (7, True)],
+    [(4, True), (0.1, False), (6, True)],
+])
+def test_a_sample_that_already_ends_quietly_or_has_no_usable_pause_is_left_alone(tmp_path, parts):
+    wav = speech_with_pauses(tmp_path / 'v.wav', parts).read_bytes()
+    assert speech.cut_at_pause(wav) == wav
+
+
+@pytest.mark.parametrize('provider', ['qwen-base', 'ming'])
+def test_only_narrators_that_ask_for_it_get_their_sample_cut(tmp_path, models, provider):
+    voice = speech_with_pauses(tmp_path / 'voice.wav', [(4, True), (0.4, False), (4, True), (0.4, False), (3, True)])
+    speech.Engine(tmp_path / 'hub', provider).speak('Hello.', voice, 1)
+    sent = models.spoken[-1]['wav']
+    heard = sf.read(io.BytesIO(sent))[0]
+    if provider == 'qwen-base':
+        assert len(heard) / 24000 == pytest.approx(8.45 + 1.0, abs=0.03), 'cut at the last pause, then a second of silence'
+        assert len(models.transcribed[0]) / 16000 == pytest.approx(8.45, abs=0.1), 'Whisper hears only the cut sample'
+    else:
+        assert len(heard) / 24000 == pytest.approx(11.8 + 1.0, abs=0.06)
 
 
 @pytest.mark.parametrize('rate, channels', [(24000, 1), (44100, 2)])

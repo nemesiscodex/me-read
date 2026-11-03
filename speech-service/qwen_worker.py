@@ -20,6 +20,16 @@ DISCLAIMER = 'X-Crispasr-Spoken-Disclaimer'
 LANGUAGES = {'en': 'English', 'es': 'Spanish'}
 
 
+FRAMES_PER_SECOND = 12.5
+
+
+def frame_limit(text):
+    """The most frames a line may take. The model's own limit is 8192, nearly eleven minutes, and a line that does not
+    stop would hold the GPU that long. me-read retakes a clip longer than 2.5 seconds plus 0.9 per word, and this limit
+    is always longer than that, so a clip cut off here is retaken."""
+    return int(FRAMES_PER_SECOND * (3.5 + len(text.split())))
+
+
 class Qwen:
     def __init__(self, folder):
         import torch
@@ -61,7 +71,8 @@ class Qwen:
         torch.cuda.manual_seed_all(seed)
         with torch.inference_mode():
             wavs, rate = self.model.generate_voice_clone(text=text, language=LANGUAGES.get(language, 'Auto'),
-                                                         voice_clone_prompt=self.prompts[key])
+                                                         voice_clone_prompt=self.prompts[key],
+                                                         max_new_tokens=frame_limit(text))
         samples = np.asarray(wavs[0], dtype='float32')
         if not len(samples) or not np.isfinite(samples).all() or not samples.any():
             raise RuntimeError('Qwen3-TTS returned empty, silent or non-finite audio')

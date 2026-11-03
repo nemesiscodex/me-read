@@ -79,6 +79,8 @@ Qwen3-TTS Base, Ming, Fish and Breeze need the exact words spoken in the voice t
 
 Chatterbox does not use transcripts. Audio8 needs the same Whisper transcript, made on the Mac and sent with each request.
 
+A designed sample is cut at 15 seconds, often in the middle of a word, and Whisper then writes the word the speaker never finished. A Qwen3-TTS narrator reads that transcript and says the missing word at the start of its clip. For `qwen-base` and `qwen-base-gpu`, me-read cuts the sample at its last pause, transcribes that, and adds a second of silence. Their stored clips are made again once when you first use a version with this change.
+
 The MLX Ming port clones from the recording and transcript without extracting CAM++ speaker embeddings. Its text normalization is not ported, so dates, numbers and abbreviations may be read incorrectly. Like other models, it can mispronounce names. A line that runs far beyond its text is retried with another seed.
 
 ## Licences
