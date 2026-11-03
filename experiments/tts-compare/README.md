@@ -19,8 +19,7 @@ ssh radeon 'cd ~/me-read-compare && bash setup-host.sh'
 
 The setup pins Ming source to `028c1eace193e7acdb256453da89b6e9207e052b` and its checkpoint to `8d66b70a00f05ad183fa8a863b4ce609fc83cbc0`. The Chatterbox installation uses commit `5de7a54aa4e5e2baadb0182dde554908b48b85c2`. Its checkpoint metadata confirms Turbo revision `749d1c1a46eb10492095d68fbcf55691ccf137cd` and Multilingual revision `5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18`.
 
-Place `en.wav`, `en.txt`, `es.wav`, and `es.txt` in `~/me-read-compare` on the host. Each text file contains the words spoken in its WAV. Use the same WAV for both models in each language.
-
+Place `en.wav`, `en.txt`, `es.wav`, and `es.txt` in `~/me-read-compare` on the host. Each text file contains the words spoken in its WAV. Use the same WAV for both models in each language. Keep references, transcripts, generated audio, and reports under the ignored `artifacts/` directory when copying them into this checkout. They can reveal book text and reading history.
 
 ## Generate the samples
 

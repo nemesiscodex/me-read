@@ -4,10 +4,7 @@
 
 Read any EPUB as a radio play. me-read gives the narrator and every character their own voice, then reads the book to you while you follow the text.
 
-
-
 Drop in a book and press play. Claude or Codex works out who says each line and how they say it. A voice model on your Mac designs a voice for each character from a short description, then speaks every line in that voice. The voice work runs locally, and the Claude or Codex calls use the login you already have, so there is no extra bill.
-
 
 ## What it does
 
@@ -40,6 +37,8 @@ cd me-read
 The first book downloads its voice models, about 5.8 GB for an English book and about 4 GB more for a Spanish one. Lines start playing once their characters have voices. After that, only new characters and new pages need work.
 
 Your books, voices, and audio are kept in `~/.local/share/me-read`. To keep them somewhere else, set `ME_READ_HOME` or pass `--home`. Run `./start --help` to see every option.
+
+Keep reading data out of Git. Use the default data directory outside the checkout. Experiment outputs and documentation media are ignored because they can contain book text, voices, character names, and reading positions. Use invented text and characters in shared tests and examples. Ignore rules do not remove files from earlier commits or delete separately hosted uploads.
 
 To find a book to try, [Project Gutenberg](https://www.gutenberg.org/) has free EPUBs. Books with a lot of dialogue show off the cast best.
 
