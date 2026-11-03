@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { flushSync } from 'react-dom'
 import { isRunning, MEDIA_KEYS, mediaKeyEvent, type MediaKey } from '../lib/mediaKeys'
 import type { PlayerEvent, PlayerState } from '../lib/player'
 import { useWakeLock } from './useWakeLock'
@@ -34,7 +35,9 @@ export function useMediaKeys(
         session.setActionHandler(key, () => {
           const { state, dispatch, startFrom } = latest.current
           const event = mediaKeyEvent(state, key, startFrom())
-          if (event) dispatch(event)
+          // Hidden pages may suspend scheduled React work after this callback.
+          // Apply audio and Media Session changes while the system command is active.
+          if (event) flushSync(() => dispatch(event))
         })
         registered.push(key)
       } catch (error) {

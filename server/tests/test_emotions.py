@@ -35,7 +35,7 @@ def test_the_tagger_says_how_each_line_is_said(world):
 
 
 def test_an_unknown_emotion_and_a_line_for_the_narrator_are_neutral(world):
-    world.ask.answer = told([('n1', 'furious'), ('narrator', 'angry'), ('n2', 'sad'), ('n3', None)])
+    world.ask.answer = told([('narrator', 'angry'), ('n2', 'furious'), ('n2', 'sad'), ('n3', None)])
     focus(world)
     world.drain()
     assert [emotion for _, _, emotion in lines(world)] == ['neutral', 'neutral', 'sad', 'neutral']

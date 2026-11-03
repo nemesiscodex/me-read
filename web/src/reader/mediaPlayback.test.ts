@@ -94,6 +94,46 @@ afterEach(async () => {
 })
 
 describe('reader media playback', () => {
+  it('resumes hidden playback before the headset callback returns', async () => {
+    await render()
+    await send('play')
+    const audio = played.at(-1)!
+    audio.currentTime = 1.25
+    await visibility(false)
+    await send('pause')
+    play.mockClear()
+
+    await act(async () => {
+      handlers.get('play')?.({ action: 'play' })
+      // A hidden page may not get another rendering task after the media command.
+      expect(play).toHaveBeenCalledOnce()
+      expect(played.at(-1)).toBe(audio)
+      expect(audio.currentTime).toBe(1.25)
+      expect(navigator.mediaSession.playbackState).toBe('playing')
+    })
+  })
+
+  it('handles repeated background pause and play commands without waiting for a render task', async () => {
+    await render()
+    await send('play')
+    await visibility(false)
+    const pause = vi.mocked(HTMLMediaElement.prototype.pause)
+    play.mockClear()
+    pause.mockClear()
+
+    await act(async () => {
+      for (let i = 0; i < 3; i++) {
+        handlers.get('pause')?.({ action: 'pause' })
+        expect(pause).toHaveBeenCalledTimes(i + 1)
+        expect(navigator.mediaSession.playbackState).toBe('paused')
+        handlers.get('play')?.({ action: 'play' })
+        expect(play).toHaveBeenCalledTimes(i + 1)
+        expect(navigator.mediaSession.playbackState).toBe('playing')
+      }
+    })
+    expect(player.state.status).toBe('playing')
+  })
+
   it('keeps the screen awake through line gaps and waiting, and releases it on pause and exit', async () => {
     await render()
     expect(request).not.toHaveBeenCalled()

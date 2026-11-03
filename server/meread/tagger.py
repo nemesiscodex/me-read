@@ -68,6 +68,8 @@ using the writer as speaker inside these ranges. Ordinary unquoted narration sta
 Use only a writer supported by the text; leave an unidentified writer's passage with the narrator.
 - Use dialogue tags, turn-taking and context, and always pick the most likely speaker. A quoted thought belongs to \
 whoever thinks it.
+- Dialogue tags and the current scene override previous speaker annotations, which may be wrong.
+- Relatives sharing a surname are different people. Do not confuse a parent with their child.
 - Reuse a cast member when the text refers to them by another name, title or description. Add a character only for \
 someone not in the cast.
 - A new character with a name gets role "named" and the fullest name the text uses, such as "Mr. Vale".
@@ -98,6 +100,77 @@ def _voice_line(c):
     return f"c{c['id']} | {c['name']} | {c['role']} | {traits} | {c['description']}"
 
 
+# Only quotation-adjacent, named dialogue tags are hard evidence. Surnames and
+# pronouns need story context, so they must never silently resolve to a relative.
+SPEECH_VERBS = (
+    'said|asked|replied|answered|whispered|murmured|shouted|yelled|cried|called|'
+    'added|continued|mumbled|muttered|exclaimed|admitted|clarified|quoted|'
+    'dijo|preguntó|respondió|contestó|susurró|murmuró|gritó|exclamó|añadió|replicó'
+)
+TITLES = {'mr', 'mrs', 'ms', 'miss', 'dr', 'professor', 'prof', 'sir', 'lady', 'lord',
+          'señor', 'señora', 'sr', 'sra', 'don', 'doña'}
+
+
+def explicit_speakers(cast, blocks):
+    """Segment -> speaker, only where an adjacent tag names one unambiguous cast member.
+
+    Work on contiguous speech/narration spans, since a long quotation or narration
+    can be split across several audio clips. Conflicting tags are left to the model.
+    """
+    def normalize(name):
+        return ' '.join(name.casefold().replace('.', '').split())
+
+    aliases = {}
+    for character in cast:
+        if character['role'] != 'named':
+            continue
+        name = normalize(character['name'])
+        choices = {name}
+        first = name.split()[0] if name else ''
+        if first and first not in TITLES:
+            choices.add(first)
+        for alias in choices - {''}:
+            aliases.setdefault(alias, set()).add(character['id'])
+    unique = {name: next(iter(ids)) for name, ids in aliases.items() if len(ids) == 1}
+    if not unique:
+        return {}
+    names = '|'.join(r'\s+'.join(re.escape(word) + (r'\.?' if word in TITLES else '')
+                                 for word in name.split()) for name in sorted(unique, key=len, reverse=True))
+    tag = (rf'(?:(?P<before>(?>{names}))\s+(?:{SPEECH_VERBS})(?=[\s.,;:!?—]|$)'
+           rf'|(?:{SPEECH_VERBS})\s+(?P<after>(?>{names}))(?=[\s.,;:!?—]|$))')
+    following = re.compile(r'^\s*[—–―]?\s*' + tag, re.I)
+    preceding = re.compile(r'(?:^|[.!?]\s+)' + tag + r'\s*[:,]\s*$', re.I)
+    evidence = {}
+    for block in blocks:
+        if block.get('writer_id') is not None:
+            continue
+        groups = []
+        for segment in block['segments']:
+            if groups and groups[-1][0]['kind'] == segment['kind']:
+                groups[-1].append(segment)
+            else:
+                groups.append([segment])
+        candidates = {}
+        for i, group in enumerate(groups):
+            if group[0]['kind'] != 'narration':
+                continue
+            text = ''.join(s['text'] for s in group)
+            for match, neighbor in ((following.match(text), i - 1), (preceding.search(text), i + 1)):
+                if not match or not 0 <= neighbor < len(groups) or groups[neighbor][0]['kind'] != 'speech':
+                    continue
+                if match['after']:
+                    tail = text[match.end('after'):]
+                    # A following surname or conjunction means the name is incomplete or plural.
+                    word = re.match(r'\s+(\w+)', tail)
+                    if word and (word[1][0].isupper() or word[1].casefold() in {'and', 'y', 'e'}):
+                        continue
+                speaker = unique[normalize(match['before'] or match['after'])]
+                for segment in groups[neighbor]:
+                    candidates.setdefault(segment['id'], set()).add(speaker)
+        evidence.update({sid: next(iter(ids)) for sid, ids in candidates.items() if len(ids) == 1})
+    return evidence
+
+
 def book_line(book):
     return (f"BOOK: {book['title']}" + (f" by {book['author']}" if book['author'] else '')
             + f" (language: {LANGUAGE_NAMES.get(book.get('language'), 'English')})")
@@ -110,6 +183,7 @@ def build_prompt(book, cast, earlier, blocks, later=()):
     """
     names = {c['id']: c['name'] for c in cast}
     markers = {}
+    evidence = explicit_speakers(cast, [*earlier, *blocks, *later])
 
     def render(block, mark):
         text = f"[[p{block['idx']}]]"
@@ -119,8 +193,9 @@ def build_prompt(book, cast, earlier, blocks, later=()):
                 markers[len(markers) + 1] = seg['id']
                 text += f'[[q{len(markers)}]]'
             text += seg['text']
-            if not ask and seg['kind'] == 'speech' and seg['character_id'] in names:
-                text += f"[{names[seg['character_id']]}]"
+            speaker = evidence.get(seg['id'], seg['character_id'])
+            if not ask and seg['kind'] == 'speech' and speaker in names:
+                text += f"[{names[speaker]}]"
         if block.get('writer_id') in names:
             text += f" [Written by {names[block['writer_id']]}]"
         return text
@@ -130,7 +205,7 @@ def build_prompt(book, cast, earlier, blocks, later=()):
     prompt = '\n\n'.join([
         book_line(book),
         'CAST SO FAR (ref | name | role | voice | description):\n' + ('\n'.join(map(_voice_line, speaking)) or '(nobody yet)'),
-        'EARLIER TEXT, for context only. A known speaker follows the quotation in brackets:\n' + ('\n'.join(context) or '(start of the book)'),
+        'EARLIER TEXT, for context only. A previous speaker attribution follows the quotation in brackets; it may be wrong:\n' + ('\n'.join(context) or '(start of the book)'),
         'TEXT TO ATTRIBUTE:\n' + '\n\n'.join(target),
         'LATER TEXT, for context only. Use signatures here to identify writers:\n'
         + ('\n\n'.join(render(block, False) for block in later) or '(end of the chapter)')])
@@ -215,6 +290,7 @@ def apply(store, book_id, markers, answer, blocks=()):
             _pick(new.get('gender'), GENDERS, 'unknown'), _pick(new.get('age'), AGES, 'adult'),
             _pick(new.get('pitch'), PITCHES, 'medium'), str(new.get('description', ''))[:200])
         refs[new['ref']] = character['id']
+    evidence = explicit_speakers(store.characters(book_id), blocks)
     assigned = []
     targets = {b['idx']: b for b in blocks if b['tag'] == 'p'}
     for passage in answer.get('written_passages', []):
@@ -244,7 +320,8 @@ def apply(store, book_id, markers, answer, blocks=()):
     for line in answer.get('lines', []):
         if not isinstance(line, dict):
             continue
-        segment_id, character_id = markers.get(line.get('q')), refs.get(line.get('speaker'))
+        segment_id = markers.get(line.get('q'))
+        character_id = evidence.get(segment_id, refs.get(line.get('speaker')))
         emotion = 'neutral' if character_id == refs['narrator'] else _pick(line.get('emotion'), EMOTIONS, 'neutral')
         if segment_id and character_id:
             with store.lock:

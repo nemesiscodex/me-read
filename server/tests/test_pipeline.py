@@ -281,7 +281,8 @@ def test_retagging_a_page_asks_again_about_dialogue_and_prose(world):
     assert all(s['audio_state'] == 'none' for b in world.chapter()[2:4] for s in b['segments'] if s['kind'] == 'speech')
     world.drain()
     after = speakers(world)
-    assert {name for _, name in after[:-1]} == {'Narrator'}
+    # Retagging changes guesses, but cannot override an explicit 'said Tom'.
+    assert [name for _, name in after] == ['Narrator', 'Tom', 'Narrator', 'Anna']
     assert after[-1] == before[-1] and after[-1][1] != 'Narrator'
     assert world.client.post(f"/api/books/{world.book['id']}/retag", json={'first': 0, 'last': 1}).json() == {'retagged': 1}
     assert world.client.post(f"/api/books/{world.book['id']}/retag", json={'first': 4, 'last': 2}).status_code == 422
