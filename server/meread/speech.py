@@ -30,7 +30,9 @@ MULTILINGUAL = 'mlx-community/chatterbox-8bit'
 BREEZE = 'mlx-community/Breeze-TTS-2-mlx-4bit'
 MING = 'mlx-community/Ming-3.0-tts-0.5B-8bit'
 AUDIO8 = 'Edge0/Audio8-TTS-Realistic-Air'
-MODEL_REVISIONS = {MING: 'd0d1da6f627e4b3f20cc2db6ba4aee86d45343ad', AUDIO8: '23c305cc013fde378edb459f538317043c993a74'}
+QWEN_BASE = 'mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit'
+MODEL_REVISIONS = {MING: 'd0d1da6f627e4b3f20cc2db6ba4aee86d45343ad', AUDIO8: '23c305cc013fde378edb459f538317043c993a74',
+                   QWEN_BASE: '50f45ef0047cde7e84c2ef04326acb8ada2436a7'}
 DEFAULT_PROVIDER = 'chatterbox'
 LANGUAGES = ('en', 'es')
 TRANSCRIBER = 'mlx-community/whisper-large-v3-turbo-asr-fp16'
@@ -89,6 +91,7 @@ PROVIDERS = {
     'breeze': Provider('breeze', (BREEZE,), ('en',), 'path'),
     'breeze-gguf': Provider('breeze-gguf', ('cstr/breeze-tts-2-GGUF@q4_k',), ('en',), 'remote', 'breeze'),
     'audio8': Provider('audio8', (AUDIO8,), ('en', 'es'), 'remote', 'audio8', retakes=3),
+    'qwen-base': Provider('qwen-base', (QWEN_BASE,), None, 'path', retakes=3),
 }
 
 
@@ -733,7 +736,9 @@ class Engine:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'reference.wav'
             path.write_bytes(with_silence(reference.wav, provider.reference_silence))
-            options = {'lang_code': language} if provider.name == 'ming' else {}
+            options = {'ming': {'lang_code': language},
+                       'qwen-base': {'language': SAMPLE_TEXT[language][0] if language in SAMPLE_TEXT else 'auto'}
+                       }.get(provider.name, {})
             return self._generate(model.generate(text=text, ref_audio=str(path), ref_text=reference.text, seed=seed,
                                                  stream=False, **options), model.sample_rate)
 

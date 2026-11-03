@@ -715,8 +715,8 @@ def test_a_line_that_keeps_rambling_is_kept_after_three_tries(tmp_path, models, 
     assert [call['seed'] for call in speech_server.speeches] == [42, 43, 44] and len(audio) == 9 * rate
 
 
-@pytest.mark.parametrize('provider', ['fish', 'breeze'])
-def test_fish_and_breeze_still_narrate_on_this_mac_when_the_service_designs(tmp_path, models, speech_server, provider):
+@pytest.mark.parametrize('provider', ['fish', 'breeze', 'qwen-base'])
+def test_local_narrators_still_narrate_on_this_mac_when_the_service_designs(tmp_path, models, speech_server, provider):
     voice = recording(tmp_path / 'voice.wav')
     engine = gpu_engine(tmp_path, speech_server, provider)
     engine.design('A low voice.', 42)
@@ -759,6 +759,10 @@ PINNED_IDENTITY = {
     'breeze-gguf': {'provider': 'breeze-gguf', 'policy': 1, 'transcription_policy': 'whisper-auto-language-16khz-v1',
                     'spoken_disclaimer': False, 'models': [
         {'id': 'cstr/breeze-tts-2-GGUF@q4_k'}, {'id': 'mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit'},
+        {'id': 'mlx-community/whisper-large-v3-turbo-asr-fp16', 'revision': '624c19c9af5603fa73b83bce14d4aeea96156d18'}]},
+    'qwen-base': {'provider': 'qwen-base', 'policy': 1, 'transcription_policy': 'whisper-auto-language-16khz-v1', 'models': [
+        {'id': 'mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit', 'revision': '50f45ef0047cde7e84c2ef04326acb8ada2436a7'},
+        {'id': 'mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit'},
         {'id': 'mlx-community/whisper-large-v3-turbo-asr-fp16', 'revision': '624c19c9af5603fa73b83bce14d4aeea96156d18'}]},
     'audio8': {'provider': 'audio8', 'policy': 1, 'transcription_policy': 'whisper-auto-language-16khz-v1',
                'spoken_disclaimer': False, 'models': [

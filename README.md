@@ -53,7 +53,7 @@ To find a book to try, [Project Gutenberg](https://www.gutenberg.org/) has free 
 
 ## Choose a narrator
 
-Chatterbox is the default English narrator. With a [GPU machine](docs/gpu-machine.md) that has Audio8 installed, Spanish books are read by Audio8 by default; without one, Chatterbox reads Spanish too. Choosing a narrator with `--tts-provider` uses it for every language. That is how you read English with Audio8, or keep Spanish on Chatterbox. Audio8 (English and Spanish, on the GPU machine only), Ming 3.0 0.5B 8-bit (English and Spanish), Fish (English and Spanish) and Breeze (English only) are also available:
+Chatterbox is the default English narrator. With a [GPU machine](docs/gpu-machine.md) that has Audio8 installed, Spanish books are read by Audio8 by default; without one, Chatterbox reads Spanish too. Choosing a narrator with `--tts-provider` uses it for every language. That is how you read English with Audio8, or keep Spanish on Chatterbox. Audio8 (English and Spanish, on the GPU machine only), Qwen3-TTS 0.6B Base 8-bit (English and Spanish), Ming 3.0 0.5B 8-bit (English and Spanish), Fish (English and Spanish) and Breeze (English only) are also available:
 
 ```sh
 ./start --tts-provider audio8
@@ -93,6 +93,7 @@ me-read's code is under the [MIT licence](LICENSE). The models it downloads have
 |---|---|---|
 | Chatterbox and Chatterbox Turbo | narration (default) and speaker comparison | MIT |
 | Audio8 TTS Realistic Air | Spanish narration on a GPU machine, optional English narration | Apache 2.0 |
+| Qwen3-TTS 0.6B Base | optional narration | Apache 2.0 |
 | Ming 3.0 0.5B | optional narration | MIT |
 | Breeze TTS 2 | designing English voices, emotion takes, optional narrator | [BreezeBlue Research and Non-Commercial](https://huggingface.co/mlx-community/Breeze-TTS-2-mlx-4bit) |
 | Qwen3-TTS VoiceDesign | designing voices for other languages | Apache 2.0 |

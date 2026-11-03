@@ -76,6 +76,14 @@ def models(monkeypatch):
                                  'seed': seed, 'stream': stream, 'lang_code': lang_code})
             yield result(self.sample_rate)
 
+    class QwenBase:
+        sample_rate = 24000
+
+        def generate(self, *, text, ref_audio, ref_text, seed, stream, language):
+            state.spoken.append({'text': text, 'wav': Path(ref_audio).read_bytes(), 'ref_text': ref_text,
+                                 'seed': seed, 'stream': stream, 'language': language})
+            yield result(self.sample_rate)
+
     class Chatterbox:
         sample_rate = 24000
         ve = SimpleNamespace(embeds_from_wavs=lambda *args, **kwargs: np.array([[1., 0., 0.]]))
@@ -102,7 +110,7 @@ def models(monkeypatch):
         state.loads.append(repo)
         return {speech.DESIGNER: Designer, speech.CHATTERBOX: Chatterbox, speech.MULTILINGUAL: Chatterbox,
                 speech.PROVIDERS['fish'].models[0]: Fish, speech.PROVIDERS['breeze'].models[0]: Breeze,
-                speech.MING: Ming, speech.TRANSCRIBER: Whisper}[repo]()
+                speech.MING: Ming, speech.QWEN_BASE: QwenBase, speech.TRANSCRIBER: Whisper}[repo]()
 
     monkeypatch.setattr(speech.Engine, '_snapshot', snapshot)
     monkeypatch.setattr(mlx_audio.stt, 'load', load)
@@ -120,6 +128,20 @@ def test_ming_clones_the_saved_voice_in_english_and_spanish_with_one_transcript(
         assert models.spoken[-1] == {'text': text, 'wav': speech.with_silence(voice.read_bytes(), 1.0),
                                      'ref_text': 'Primera frase.', 'seed': 42, 'stream': False, 'lang_code': language}
     assert models.loads == [speech.TRANSCRIBER, speech.MING]
+    assert len(models.transcribed) == 1
+
+
+def test_qwen_base_clones_the_saved_voice_by_language_name_with_one_transcript(tmp_path, models):
+    voice = recording(tmp_path / 'voice.wav')
+    engine = speech.Engine(tmp_path / 'hub', 'qwen-base')
+    assert engine.provider_for('es').name == engine.provider_for('en').name == 'qwen-base'
+    for language, name, text in [('en', 'English', 'Hello.'), ('es', 'Spanish', 'Hola.'), ('fr', 'auto', 'Bonjour.')]:
+        audio, rate = engine.speak(text, voice, 42, language=language)
+        assert rate == 24000 and audio.shape == (12000,) and audio.dtype == np.float32
+        assert models.spoken[-1] == {'text': text, 'wav': voice.read_bytes(), 'ref_text': 'Primera frase.', 'seed': 42,
+                                     'stream': False, 'language': name}
+    assert models.loads == [speech.TRANSCRIBER, speech.QWEN_BASE]
+    assert models.snapshots[-1] == (speech.QWEN_BASE, None)
     assert len(models.transcribed) == 1
 
 

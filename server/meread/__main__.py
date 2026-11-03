@@ -19,7 +19,7 @@ def argument_parser():
                              'breeze-gguf narrate only through the GPU speech service at --tts-url, and breeze-gguf is English-only)')
     parser.add_argument('--tts-url', help='address of the GPU speech service, for example http://127.0.0.1:8781. With it, '
                                           'the service designs voices, makes emotion takes and compares speakers, and '
-                                          'narrates for chatterbox, audio8 and breeze-gguf; ming, fish and breeze still narrate here')
+                                          'narrates for chatterbox, audio8 and breeze-gguf; qwen-base, ming, fish and breeze still narrate here')
     parser.add_argument('--tts-consent', help='your own statement that you may use the reference voices; required with '
                                               '--tts-url, sent with every request, and has no default')
     parser.add_argument('--image-url', help='set the image service address before workers start; an empty string disables pictures')
