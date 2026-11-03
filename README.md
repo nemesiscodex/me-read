@@ -4,6 +4,10 @@
 
 Read any EPUB as a radio play. me-read gives the narrator and every character their own voice, then reads the book to you while you follow the text.
 
+https://github.com/user-attachments/assets/2e310850-259e-4e7d-a317-d64d13834d19
+
+*45 seconds, with sound. See the reader in action and change a character’s voice.*
+
 Drop in a book and press play. Claude or Codex works out who says each line and how they say it. A voice model on your Mac designs a voice for each character from a short description, then speaks every line in that voice. The voice work runs locally, and the Claude or Codex calls use the login you already have, so there is no extra bill.
 
 ## What it does
