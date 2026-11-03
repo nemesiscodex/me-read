@@ -137,7 +137,7 @@ def test_qwen_base_clones_the_saved_voice_by_language_name_with_one_transcript(t
     assert engine.provider_for('es').name == engine.provider_for('en').name == 'qwen-base'
     for language, name, text in [('en', 'English', 'Hello.'), ('es', 'Spanish', 'Hola.'), ('fr', 'auto', 'Bonjour.')]:
         audio, rate = engine.speak(text, voice, 42, language=language)
-        assert rate == 24000 and audio.shape == (12000,) and audio.dtype == np.float32
+        assert rate == 24000 and audio.shape == (12000 + 4800,) and audio.dtype == np.float32
         assert models.spoken[-1] == {'text': text, 'wav': speech.with_silence(voice.read_bytes(), 1.0),
                                      'ref_text': 'Primera frase.', 'seed': 42, 'stream': False, 'language': name}
     assert models.loads == [speech.TRANSCRIBER, speech.QWEN_BASE]
@@ -184,6 +184,41 @@ def test_only_narrators_that_ask_for_it_get_their_sample_cut(tmp_path, models, p
         assert len(models.transcribed[0]) / 16000 == pytest.approx(8.45, abs=0.1), 'Whisper hears only the cut sample'
     else:
         assert len(heard) / 24000 == pytest.approx(11.8 + 1.0, abs=0.06)
+
+
+def test_a_soft_end_fades_a_clip_that_stops_on_its_last_word_and_leaves_a_pause():
+    rate = 24000
+    clip = np.concatenate([np.zeros(rate // 10), np.full(rate, 0.3)]).astype('float32')
+    ended = speech.soft_end(clip, rate)
+    body, silence = ended[:-int(0.2 * rate)], ended[-int(0.2 * rate):]
+    assert not silence.any() and len(body) == rate + int(0.03 * rate) + 0
+    assert body[-int(0.08 * rate) - 1] == pytest.approx(0.3, abs=0.01) and abs(body[-1]) < 0.001
+    assert np.all(np.diff(np.abs(body[-int(0.08 * rate):])) <= 1e-9), 'the fade only goes down'
+
+
+def test_a_soft_end_keeps_the_models_own_fade_out_where_trim_cuts_it():
+    rate = 24000
+    speech_part = np.full(rate, 0.3, dtype='float32')
+    fade = (0.3 * np.exp(-np.arange(int(1.2 * rate)) / (0.15 * rate))).astype('float32')
+    clip = np.concatenate([speech_part, fade, np.zeros(rate, dtype='float32')])
+    cut = len(speech.trim(clip, rate)) / rate
+    kept = (len(speech.soft_end(clip, rate)) - int(0.2 * rate)) / rate
+    assert kept > cut + 0.1, 'the decay below the loud threshold is kept'
+    assert kept < 2.0, 'the silence the model made after it is not'
+
+
+def test_a_soft_end_leaves_silence_and_an_all_silent_clip_alone(tmp_path):
+    rate = 24000
+    assert not speech.soft_end(np.zeros(rate, dtype='float32'), rate).any() and len(speech.soft_end(np.zeros(rate, dtype='float32'), rate)) == rate
+    quiet = np.concatenate([np.full(rate, 0.3), np.zeros(rate)]).astype('float32')
+    ended = speech.soft_end(quiet, rate)
+    assert len(ended) / rate == pytest.approx(1 + 0.03 * 0 + 0.2, abs=0.05) and not ended[-int(0.2 * rate):].any()
+
+
+@pytest.mark.parametrize('provider, softened', [('audio8', True), ('qwen-base', True), ('qwen-base-gpu', True),
+                                                 ('chatterbox', False), ('ming', False), ('fish', False), ('breeze', False)])
+def test_only_the_narrators_that_stop_on_the_last_word_get_a_soft_end(provider, softened):
+    assert speech.PROVIDERS[provider].soft_end is softened
 
 
 @pytest.mark.parametrize('rate, channels', [(24000, 1), (44100, 2)])

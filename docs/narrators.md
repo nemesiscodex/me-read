@@ -81,6 +81,8 @@ Chatterbox does not use transcripts. Audio8 needs the same Whisper transcript, m
 
 A designed sample is cut at 15 seconds, often in the middle of a word, and Whisper then writes the word the speaker never finished. A Qwen3-TTS narrator reads that transcript and says the missing word at the start of its clip. For `qwen-base` and `qwen-base-gpu`, me-read cuts the sample at its last pause, transcribes that, and adds a second of silence. Their stored clips are made again once when you first use a version with this change.
 
+Audio8 stops its audio on the last word, and `trim` cuts Qwen's own fade-out at a fixed loudness. For `audio8`, `qwen-base` and `qwen-base-gpu`, me-read keeps the model's fade-out down to 50 dB under the peak, fades a clip that still sounds at its end over 80 ms, and leaves 0.2 seconds of silence after the last word. The other narrators are unchanged.
+
 The MLX Ming port clones from the recording and transcript without extracting CAM++ speaker embeddings. Its text normalization is not ported, so dates, numbers and abbreviations may be read incorrectly. Like other models, it can mispronounce names. A line that runs far beyond its text is retried with another seed.
 
 ## Licences

@@ -762,17 +762,18 @@ PINNED_IDENTITY = {
         {'id': 'cstr/breeze-tts-2-GGUF@q4_k'}, {'id': 'mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit'},
         {'id': 'mlx-community/whisper-large-v3-turbo-asr-fp16', 'revision': '624c19c9af5603fa73b83bce14d4aeea96156d18'}]},
     'qwen-base': {'provider': 'qwen-base', 'policy': 1, 'transcription_policy': 'whisper-auto-language-16khz-v1',
-                  'reference_silence': 1.0, 'cut_at_pause': True, 'models': [
+                  'reference_silence': 1.0, 'cut_at_pause': True, 'soft_end': True, 'models': [
         {'id': 'mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit', 'revision': '50f45ef0047cde7e84c2ef04326acb8ada2436a7'},
         {'id': 'mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit'},
         {'id': 'mlx-community/whisper-large-v3-turbo-asr-fp16', 'revision': '624c19c9af5603fa73b83bce14d4aeea96156d18'}]},
     'qwen-base-gpu': {'provider': 'qwen-base-gpu', 'policy': 1, 'transcription_policy': 'whisper-auto-language-16khz-v1',
-                      'spoken_disclaimer': False, 'reference_silence': 1.0, 'cut_at_pause': True, 'models': [
+                      'spoken_disclaimer': False, 'reference_silence': 1.0, 'cut_at_pause': True, 'soft_end': True,
+                      'models': [
         {'id': 'Qwen/Qwen3-TTS-12Hz-0.6B-Base', 'revision': '5d83992436eae1d760afd27aff78a71d676296fc'},
         {'id': 'mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit'},
         {'id': 'mlx-community/whisper-large-v3-turbo-asr-fp16', 'revision': '624c19c9af5603fa73b83bce14d4aeea96156d18'}]},
     'audio8': {'provider': 'audio8', 'policy': 1, 'transcription_policy': 'whisper-auto-language-16khz-v1',
-               'spoken_disclaimer': False, 'models': [
+               'spoken_disclaimer': False, 'soft_end': True, 'models': [
         {'id': 'Edge0/Audio8-TTS-Realistic-Air', 'revision': '23c305cc013fde378edb459f538317043c993a74'},
         {'id': 'mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit'},
         {'id': 'mlx-community/whisper-large-v3-turbo-asr-fp16', 'revision': '624c19c9af5603fa73b83bce14d4aeea96156d18'}]},
@@ -849,7 +850,7 @@ def test_a_rambling_qwen_base_gpu_line_is_retaken_with_the_next_seed(tmp_path, m
     speech_server.replies = [wav_bytes(seconds=9), wav_bytes(seconds=0.5)]
     audio, rate = gpu_engine(tmp_path, speech_server, 'qwen-base-gpu').speak('Hola.', recording(tmp_path / 'voice.wav'), 42,
                                                                              language='es')
-    assert [call['seed'] for call in speech_server.speeches] == [42, 43] and len(audio) == rate // 2
+    assert [call['seed'] for call in speech_server.speeches] == [42, 43] and len(audio) == rate // 2 + int(0.2 * rate)
 
 
 def test_qwen_base_gpu_needs_a_speech_service(tmp_path):
@@ -860,7 +861,7 @@ def test_qwen_base_gpu_needs_a_speech_service(tmp_path):
 def test_a_rambling_audio8_line_is_retaken_with_the_next_seed(tmp_path, models, speech_server):
     speech_server.replies = [wav_bytes(seconds=9), wav_bytes(seconds=0.5)]
     audio, rate = gpu_engine(tmp_path, speech_server, 'audio8').speak('Hola.', recording(tmp_path / 'voice.wav'), 42, language='es')
-    assert [call['seed'] for call in speech_server.speeches] == [42, 43] and len(audio) == rate // 2
+    assert [call['seed'] for call in speech_server.speeches] == [42, 43] and len(audio) == rate // 2 + int(0.2 * rate)
 
 
 def test_without_a_service_spanish_stays_with_chatterbox_on_this_mac(tmp_path):

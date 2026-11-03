@@ -59,6 +59,8 @@ class Provider:
     reference_silence: float = 0
     # End the saved sample at its last pause when it ends mid-word, so the transcript only names words the audio says.
     cut_at_pause: bool = False
+    # End each clip with the model's own fade-out and a little silence, for a model that stops on the last word.
+    soft_end: bool = False
 
     def emotions(self, language):
         if language == 'en' or (language == 'es' and self.name in ('ming', 'chatterbox', 'audio8')):
@@ -75,7 +77,8 @@ class Provider:
                 **({'transcription_policy': TRANSCRIPTION_POLICY} if self.reference != 'conditionals' else {}),
                 **({'spoken_disclaimer': False} if self.reference == 'remote' else {}),
                 **({'reference_silence': self.reference_silence} if self.reference_silence else {}),
-                **({'cut_at_pause': True} if self.cut_at_pause else {})}
+                **({'cut_at_pause': True} if self.cut_at_pause else {}),
+                **({'soft_end': True} if self.soft_end else {})}
 
     def validate_language(self, language):
         if self.languages is None or language in self.languages:
@@ -95,10 +98,11 @@ PROVIDERS = {
     'fish': Provider('fish', ('mlx-community/fish-audio-s2-pro-8bit',), None, 'waveform'),
     'breeze': Provider('breeze', (BREEZE,), ('en',), 'path'),
     'breeze-gguf': Provider('breeze-gguf', ('cstr/breeze-tts-2-GGUF@q4_k',), ('en',), 'remote', 'breeze'),
-    'audio8': Provider('audio8', (AUDIO8,), ('en', 'es'), 'remote', 'audio8', retakes=3),
-    'qwen-base': Provider('qwen-base', (QWEN_BASE,), None, 'path', retakes=3, reference_silence=1.0, cut_at_pause=True),
+    'audio8': Provider('audio8', (AUDIO8,), ('en', 'es'), 'remote', 'audio8', retakes=3, soft_end=True),
+    'qwen-base': Provider('qwen-base', (QWEN_BASE,), None, 'path', retakes=3, reference_silence=1.0, cut_at_pause=True,
+                          soft_end=True),
     'qwen-base-gpu': Provider('qwen-base-gpu', (QWEN_BASE_ORIGINAL,), ('en', 'es'), 'remote', 'qwen-base', retakes=3,
-                              reference_silence=1.0, cut_at_pause=True),
+                              reference_silence=1.0, cut_at_pause=True, soft_end=True),
 }
 
 
@@ -236,6 +240,25 @@ def trim(audio, rate, threshold=0.01, before=0.03, after=0.12):
     if not len(loud):
         return audio
     return audio[max(0, loud[0] - int(before * rate)):loud[-1] + 1 + int(after * rate)]
+
+
+def soft_end(audio, rate, floor=-50, fade=0.08, tail=0.2, reach=0.4, before=0.03, threshold=0.01):
+    """`audio` cut to the speech like `trim`, but ending the way a spoken word ends. The model's own fade-out is kept down
+    to `floor` dB under the peak, though no more than `reach` seconds past the last loud sample. A clip that still sounds
+    at its end is faded over `fade` seconds, and `tail` seconds of silence follow, so the next clip does not start on the
+    last word."""
+    loud = np.flatnonzero(np.abs(audio) > threshold)
+    if not len(loud):
+        return audio
+    peak = np.abs(audio).max()
+    heard = np.flatnonzero(np.abs(audio) > peak * 10 ** (floor / 20))
+    end = min(heard[-1], loud[-1] + int(reach * rate)) + 1
+    clip = audio[max(0, loud[0] - int(before * rate)):end].copy()
+    size = max(1, int(0.01 * rate))
+    if np.sqrt((clip[-size:] ** 2).mean()) > peak * 10 ** (floor / 20):
+        length = min(len(clip), int(fade * rate))
+        clip[-length:] *= np.cos(np.linspace(0, np.pi / 2, length)) ** 2
+    return np.concatenate([clip, np.zeros(int(tail * rate), dtype=clip.dtype)])
 
 
 def loudness(audio, rate):
@@ -860,7 +883,7 @@ class Engine:
             # A short line sometimes rambles on past its text; a clip far longer than its words is retaken.
             for attempt in range(provider.retakes):
                 audio, rate = self.raw.line(text, reference, seed + attempt, language)
-                audio = trim(shifted(audio, -semitones), rate)
+                audio = (soft_end if provider.soft_end else trim)(shifted(audio, -semitones), rate)
                 if len(audio) / rate <= 2.5 + words * 0.9:
                     break
         return leveled(audio, rate), rate
