@@ -53,7 +53,7 @@ To find a book to try, [Project Gutenberg](https://www.gutenberg.org/) has free 
 
 ## Choose a narrator
 
-Chatterbox is the default English narrator. With a [GPU machine](docs/gpu-machine.md) that has Audio8 installed, Spanish books are read by Audio8 by default; without one, Chatterbox reads Spanish too. Choosing a narrator with `--tts-provider` uses it for every language. That is how you read English with Audio8, or keep Spanish on Chatterbox. Audio8 (English and Spanish, on the GPU machine only), Qwen3-TTS 0.6B Base 8-bit (English and Spanish), Ming 3.0 0.5B 8-bit (English and Spanish), Fish (English and Spanish) and Breeze (English only) are also available:
+Chatterbox is the default English narrator. With a [GPU machine](docs/gpu-machine.md) that has Audio8 installed, Spanish books are read by Audio8 by default; without one, Chatterbox reads Spanish too. Choosing a narrator with `--tts-provider` uses it for every language. That is how you read English with Audio8, or keep Spanish on Chatterbox. Audio8 (English and Spanish, on the GPU machine only), Qwen3-TTS 0.6B Base (English and Spanish; 8-bit on the Mac as `qwen-base`, full precision on the GPU machine as `qwen-base-gpu`), Ming 3.0 0.5B 8-bit (English and Spanish), Fish (English and Spanish) and Breeze (English only) are also available:
 
 ```sh
 ./start --tts-provider audio8

@@ -99,13 +99,14 @@ class SpeechServer:
         voice, model = body.get('voice'), body.get('model')
         if voice and body.get('consent_attestation') != self.consent:
             return failure(400, 'consent_required', 'consent_attestation is required')
-        if (model not in ('breeze', 'qwen', 'chatterbox', 'audio8') or (model in ('chatterbox', 'audio8') and not voice)
+        if (model not in ('breeze', 'qwen', 'chatterbox', 'audio8', 'qwen-base')
+                or (model in ('chatterbox', 'audio8', 'qwen-base') and not voice)
                 or (model == 'qwen' and (voice or not body.get('instructions')))):
             return failure(400, 'invalid_request', f'{model} cannot take these fields')
         if voice is None:
             headers = {} if self.design_disclaimer is None else {'X-Crispasr-Spoken-Disclaimer': self.design_disclaimer}
             return 200, wav_bytes(self.sample_rate, seconds=20), 'audio/wav', headers
-        if model in ('breeze', 'audio8') and not body.get('ref_text'):
+        if model in ('breeze', 'audio8', 'qwen-base') and not body.get('ref_text'):
             return failure(400, 'ref_text_required', f'a {model} clone needs the transcript of its voice')
         if self.broken or voice not in self.voices:
             return failure(500, 'synthesis_failed', 'the voice is unknown')
@@ -764,6 +765,11 @@ PINNED_IDENTITY = {
         {'id': 'mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit', 'revision': '50f45ef0047cde7e84c2ef04326acb8ada2436a7'},
         {'id': 'mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit'},
         {'id': 'mlx-community/whisper-large-v3-turbo-asr-fp16', 'revision': '624c19c9af5603fa73b83bce14d4aeea96156d18'}]},
+    'qwen-base-gpu': {'provider': 'qwen-base-gpu', 'policy': 1, 'transcription_policy': 'whisper-auto-language-16khz-v1',
+                      'spoken_disclaimer': False, 'models': [
+        {'id': 'Qwen/Qwen3-TTS-12Hz-0.6B-Base', 'revision': '5d83992436eae1d760afd27aff78a71d676296fc'},
+        {'id': 'mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit'},
+        {'id': 'mlx-community/whisper-large-v3-turbo-asr-fp16', 'revision': '624c19c9af5603fa73b83bce14d4aeea96156d18'}]},
     'audio8': {'provider': 'audio8', 'policy': 1, 'transcription_policy': 'whisper-auto-language-16khz-v1',
                'spoken_disclaimer': False, 'models': [
         {'id': 'Edge0/Audio8-TTS-Realistic-Air', 'revision': '23c305cc013fde378edb459f538317043c993a74'},
@@ -776,7 +782,7 @@ PINNED_IDENTITY = {
 def test_generation_identity_is_pinned_and_does_not_depend_on_where_the_models_run(tmp_path, provider):
     with_service = speech.Engine(tmp_path / 'hub', provider, tts_url='http://127.0.0.1:9', tts_consent=CONSENT)
     assert with_service.generation_identity == PINNED_IDENTITY[provider]
-    if provider not in ('breeze-gguf', 'audio8'):
+    if provider not in ('breeze-gguf', 'audio8', 'qwen-base-gpu'):
         assert speech.Engine(tmp_path / 'hub', provider).generation_identity == PINNED_IDENTITY[provider]
 
 
@@ -824,6 +830,28 @@ def test_audio8_can_narrate_english_too_when_chosen(tmp_path, models, speech_ser
     engine.speak('Hello.', recording(tmp_path / 'voice.wav'), 42, language='en')
     assert [(call['model'], call['language'], call['ref_text']) for call in speech_server.speeches] == [
         ('audio8', 'en', 'The saved words.')]
+
+
+def test_qwen_base_gpu_narrates_on_the_service_with_the_transcript_and_language(tmp_path, models, speech_server):
+    models.transcript = 'The saved words.'
+    engine = gpu_engine(tmp_path, speech_server, 'qwen-base-gpu')
+    voice = recording(tmp_path / 'voice.wav')
+    engine.speak('Hola.', voice, 42, language='es')
+    assert speech_server.speeches == [asked(model='qwen-base', input='Hola.', voice=name_for(voice.read_bytes()), language='es',
+                                            ref_text='The saved words.', seed=42)]
+    assert models.loads == [speech.TRANSCRIBER], 'Whisper here, the model on the service'
+
+
+def test_a_rambling_qwen_base_gpu_line_is_retaken_with_the_next_seed(tmp_path, models, speech_server):
+    speech_server.replies = [wav_bytes(seconds=9), wav_bytes(seconds=0.5)]
+    audio, rate = gpu_engine(tmp_path, speech_server, 'qwen-base-gpu').speak('Hola.', recording(tmp_path / 'voice.wav'), 42,
+                                                                             language='es')
+    assert [call['seed'] for call in speech_server.speeches] == [42, 43] and len(audio) == rate // 2
+
+
+def test_qwen_base_gpu_needs_a_speech_service(tmp_path):
+    with pytest.raises(ValueError, match='--tts-url is required.*qwen-base-gpu'):
+        speech.Engine(tmp_path / 'hub', 'qwen-base-gpu')
 
 
 def test_a_rambling_audio8_line_is_retaken_with_the_next_seed(tmp_path, models, speech_server):

@@ -6,6 +6,7 @@ The speech service for me-read. It runs on the machine with the GPU and does me-
 - `qwen`: Qwen3-TTS 1.7B VoiceDesign designs voices for books in other languages.
 - `chatterbox`: Chatterbox narrates in an uploaded voice. English uses Chatterbox Turbo, other languages Chatterbox Multilingual.
 - `audio8`: Audio8 TTS Realistic Air narrates English and Spanish in an uploaded voice and its transcript. Optional; see [Install Audio8](#install-audio8).
+- `qwen-base`: the original Qwen3-TTS 0.6B Base narrates English and Spanish in an uploaded voice and its transcript. Optional; see [Install Qwen3-TTS Base](#install-qwen3-tts-base).
 
 Breeze and Qwen run in [CrispASR](https://github.com/CrispStrobe/CrispASR) processes that the service starts and stops. Chatterbox runs inside the service with the ROCm build of PyTorch. Breeze and Qwen in PyTorch were tried and rejected: Breeze took 8 to 9 seconds of work per second of audio (and fp16 failed), Qwen 4.5 to 6.6.
 
@@ -23,6 +24,7 @@ Measured on that card, in seconds of work per second of audio, one request at a 
 | `qwen` design | 0.8 |
 | `chatterbox` English (Turbo) | 0.3, and about 1.0 for the first line in a new voice |
 | `chatterbox` other languages (Multilingual) | 0.8 |
+| `qwen-base` clone, float16 with a float32 code predictor | 1.15 to 1.4. bfloat16 is 2.9, and plain float16 crashes. |
 | `audio8` clone, float16 | 1.1 (1.1 to 1.5 for the first line after loading). bfloat16 is 2.9. |
 
 Loading a model on first use adds 1 to 2 seconds for Breeze or Qwen, and 5 to 15 seconds for a Chatterbox model.
@@ -89,6 +91,19 @@ bash setup-audio8.sh
 
 That creates `.venv-audio8` (about 160 MB) and downloads the checkpoint at revision `23c305cc013fde378edb459f538317043c993a74` into `models/audio8-air` (2.4 GB). Restart the service. Without both, `audio8` requests answer 400 `model_not_installed` and everything else works as before. The worker runs in float16 because the RX 6900 XT does not accelerate bfloat16.
 
+## Install Qwen3-TTS Base
+
+Optional. The original Qwen3-TTS 12Hz 0.6B Base (Apache 2.0, 24 kHz), not a quantized copy. `qwen-tts` needs transformers 4.57.3, so like Audio8 it runs in its own worker, `qwen_worker.py`, with its own environment that borrows the service's ROCm PyTorch. After the service has run once:
+
+```sh
+cd ~/me-read-speech
+bash setup-qwen.sh
+```
+
+That creates `.venv-qwen` (about 560 MB) and downloads the checkpoint at revision `5d83992436eae1d760afd27aff78a71d676296fc` into `models/qwen3-tts-base` (2.4 GB). Restart the service. Without both, `qwen-base` requests answer 400 `model_not_installed`.
+
+The worker runs in float16 with one change. The model's code predictor, a small network that fills in the other codebooks of each audio frame, computes `act(gate) * up` in its MLP, and that product passes the float16 maximum of 65504 and becomes `inf`. Sampling from it crashes the GPU with a hardware exception, which kills the worker process; the service then starts it again and the request fails. The worker keeps that network's layers in float32 and everything else in float16. Four short English and Spanish clips were checked this way. A different input could overflow somewhere else, and such a crash fails one clip, which me-read retries.
+
 ## Run
 
 Needs [uv](https://docs.astral.sh/uv/) and a user in the `video` and `render` groups. Copy this folder to `~/me-read-speech`, then:
@@ -109,6 +124,7 @@ Flags, all optional:
 | `--models` | `~/me-read-speech/models` | the model files above |
 | `--crispasr` | `~/me-read-speech/build/bin/crispasr` | the CrispASR binary |
 | `--crispasr-library-path` | none | `LD_LIBRARY_PATH` for CrispASR only, for example `/opt/rocm/lib`. PyTorch brings its own ROCm libraries. |
+| `--qwen-python` | `~/me-read-speech/.venv-qwen/bin/python` | the Python of the Qwen environment |
 | `--audio8-python` | `~/me-read-speech/.venv-audio8/bin/python` | the Python of the Audio8 environment |
 | `--budget-gb` | `13` | how much GPU memory the loaded models may use, by estimate |
 | `--load-wait` | `60` | seconds a request waits for its model to load before it gets a 503 |
@@ -150,6 +166,7 @@ The models do not fit on a 16 GB card together. The service loads each one on fi
 | Chatterbox Turbo | 4.5 GB |
 | Chatterbox Multilingual | 5.5 GB |
 | Audio8 | 4.0 GB (3.1 GB measured) |
+| Qwen3-TTS Base | 4.0 GB (estimate) |
 
 With the default 13 GB, loading another model often unloads the least recently used one.
 
@@ -182,13 +199,13 @@ JSON:
 
 | field | meaning |
 |---|---|
-| `model` | `breeze`, `qwen`, `chatterbox` or `audio8`. Required. |
+| `model` | `breeze`, `qwen`, `chatterbox`, `audio8` or `qwen-base`. Required. |
 | `input` | the text to speak. Required. |
-| `voice` | an uploaded voice. Required for `chatterbox` and `audio8`. With `breeze` it makes a clone, or a direction when `instructions` is also given. Not allowed with `qwen`. |
-| `ref_text` | what the voice's WAV says, for `breeze` and `audio8`. Without it the uploaded transcript is used. |
-| `instructions` | a voice description (design) or how to say the line (direction). Required for `qwen`. With `breeze`, no voice means design and a voice means direction. Not allowed with `chatterbox` and `audio8`. |
+| `voice` | an uploaded voice. Required for `chatterbox`, `audio8` and `qwen-base`. With `breeze` it makes a clone, or a direction when `instructions` is also given. Not allowed with `qwen`. |
+| `ref_text` | what the voice's WAV says, for `breeze`, `audio8` and `qwen-base`. Without it the uploaded transcript is used. |
+| `instructions` | a voice description (design) or how to say the line (direction). Required for `qwen`. With `breeze`, no voice means design and a voice means direction. Not allowed with `chatterbox`, `audio8` and `qwen-base`. |
 | `cfg_scale` | `breeze` only. me-read sends 4 when it designs a voice and 1 when it directs a take. |
-| `language` | ISO code such as `en` or `es`. `chatterbox` uses Turbo for `en`, which is the default, and Multilingual otherwise. `qwen` speaks it. `audio8` accepts `en` and `es`. |
+| `language` | ISO code such as `en` or `es`. `chatterbox` uses Turbo for `en`, which is the default, and Multilingual otherwise. `qwen` speaks it. `audio8` and `qwen-base` accept `en` and `es`. |
 | `seed` | integer. The same seed and inputs give the same audio samples, except that the first `audio8` request after the model loads comes out slightly different. |
 | `consent_attestation` | required whenever `voice` is given. Sent to CrispASR as both its consent and its marking statement. |
 | `spoken_disclaimer` | me-read sends `false`. Passed to CrispASR. |
@@ -200,13 +217,13 @@ Errors:
 
 | status and code | when |
 |---|---|
-| 400 `unknown_model` | `model` is not one of the four |
-| 400 `model_not_installed` | `audio8` without its environment and checkpoint |
+| 400 `unknown_model` | `model` is not one of the five |
+| 400 `model_not_installed` | `audio8` or `qwen-base` without its environment and checkpoint |
 | 400 `missing_required_field` | a field the model needs is missing |
 | 400 `invalid_request` | a field the model does not take is given, or a field is malformed |
 | 400 `consent_required` | `voice` without `consent_attestation` |
-| 400 `ref_text_required` | `breeze` or `audio8` with a voice, no `ref_text` and no uploaded transcript |
-| 400 `unsupported_language` | `chatterbox` or `audio8` does not speak `language` |
+| 400 `ref_text_required` | `breeze`, `audio8` or `qwen-base` with a voice, no `ref_text` and no uploaded transcript |
+| 400 `unsupported_language` | `chatterbox`, `audio8` or `qwen-base` does not speak `language` |
 | 500 `synthesis_failed` | the voice is not uploaded, or the model failed. me-read uploads the voice again on this. |
 | 500 `load_failed` | the model could not load |
 | 503 `loading` | the model is still loading |

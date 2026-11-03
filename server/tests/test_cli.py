@@ -23,7 +23,7 @@ def test_help_lists_registry_choices_and_creates_no_library(tmp_path, monkeypatc
         __main__.main()
     assert exited.value.code == 0
     help_text = ' '.join(capsys.readouterr().out.split())
-    assert '--tts-provider {ming,chatterbox,fish,breeze,breeze-gguf,audio8,qwen-base}' in help_text
+    assert '--tts-provider {ming,chatterbox,fish,breeze,breeze-gguf,audio8,qwen-base,qwen-base-gpu}' in help_text
     assert 'default: chatterbox' in help_text and 'breeze is English-only' in help_text
     assert '--tts-url' in help_text and 'for example http://127.0.0.1:8781' in help_text and 'you may use the reference voices' in help_text
     assert not home.exists()
@@ -96,6 +96,7 @@ def test_a_url_needs_consent_and_consent_needs_a_url_with_any_narrator(tmp_path,
     ('chatterbox', 'the speech service at 127.0.0.1:8781'),
     ('breeze-gguf', 'the speech service at 127.0.0.1:8781'),
     ('audio8', 'the speech service at 127.0.0.1:8781'),
+    ('qwen-base-gpu', 'the speech service at 127.0.0.1:8781'),
     ('qwen-base', 'this Mac with mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit'),
     ('fish', 'this Mac with mlx-community/fish-audio-s2-pro-8bit'),
     ('breeze', 'this Mac with mlx-community/Breeze-TTS-2-mlx-4bit'),

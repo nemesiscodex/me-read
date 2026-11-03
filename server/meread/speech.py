@@ -31,8 +31,10 @@ BREEZE = 'mlx-community/Breeze-TTS-2-mlx-4bit'
 MING = 'mlx-community/Ming-3.0-tts-0.5B-8bit'
 AUDIO8 = 'Edge0/Audio8-TTS-Realistic-Air'
 QWEN_BASE = 'mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit'
+QWEN_BASE_ORIGINAL = 'Qwen/Qwen3-TTS-12Hz-0.6B-Base'
 MODEL_REVISIONS = {MING: 'd0d1da6f627e4b3f20cc2db6ba4aee86d45343ad', AUDIO8: '23c305cc013fde378edb459f538317043c993a74',
-                   QWEN_BASE: '50f45ef0047cde7e84c2ef04326acb8ada2436a7'}
+                   QWEN_BASE: '50f45ef0047cde7e84c2ef04326acb8ada2436a7',
+                   QWEN_BASE_ORIGINAL: '5d83992436eae1d760afd27aff78a71d676296fc'}
 DEFAULT_PROVIDER = 'chatterbox'
 LANGUAGES = ('en', 'es')
 TRANSCRIBER = 'mlx-community/whisper-large-v3-turbo-asr-fp16'
@@ -92,6 +94,7 @@ PROVIDERS = {
     'breeze-gguf': Provider('breeze-gguf', ('cstr/breeze-tts-2-GGUF@q4_k',), ('en',), 'remote', 'breeze'),
     'audio8': Provider('audio8', (AUDIO8,), ('en', 'es'), 'remote', 'audio8', retakes=3),
     'qwen-base': Provider('qwen-base', (QWEN_BASE,), None, 'path', retakes=3),
+    'qwen-base-gpu': Provider('qwen-base-gpu', (QWEN_BASE_ORIGINAL,), ('en', 'es'), 'remote', 'qwen-base', retakes=3),
 }
 
 
@@ -303,7 +306,7 @@ class Remote:
 
     def __init__(self, url, consent):
         if not url:
-            raise ValueError('--tts-url is required with --tts-provider audio8 or breeze-gguf and with --tts-consent, '
+            raise ValueError('--tts-url is required with --tts-provider audio8, qwen-base-gpu or breeze-gguf and with --tts-consent, '
                              'for example http://127.0.0.1:8781')
         if not consent or not consent.strip():
             raise ValueError('--tts-consent is required with --tts-url. Write your own statement about the reference '
@@ -403,7 +406,7 @@ class Remote:
 
 
 def connect(provider, url, consent):
-    """The GPU speech service when an address or consent was given, which audio8 and breeze-gguf cannot narrate
+    """The GPU speech service when an address or consent was given, which audio8, qwen-base-gpu and breeze-gguf cannot narrate
     without, else None. Raises ValueError when the settings are missing or unusable."""
     if url is None and consent is None and (provider is None or PROVIDERS[provider].reference != 'remote'):
         return None
@@ -767,8 +770,8 @@ class Engine:
         service = self.provider_for(language).service
         if service == 'chatterbox':
             return self._cloned('chatterbox', wav, text, seed, language=language)
-        if service == 'audio8':
-            return self._cloned('audio8', wav, text, seed, language=language, ref_text=self._transcript(wav))
+        if service in ('audio8', 'qwen-base'):
+            return self._cloned(service, wav, text, seed, language=language, ref_text=self._transcript(wav))
         return self._cloned('breeze', wav, text, seed, ref_text=self._transcript(wav))
 
     def _cloned(self, model, wav, text, seed, **fields):

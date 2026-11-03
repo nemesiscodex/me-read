@@ -1,4 +1,4 @@
-"""Speech service for me-read: Breeze, Qwen voice design, Chatterbox and Audio8 behind one HTTP API. It runs on the machine with the GPU."""
+"""Speech service for me-read: Breeze, Qwen voice design, Chatterbox, Audio8 and Qwen3-TTS Base behind one HTTP API. It runs on the machine with the GPU."""
 import argparse
 import base64
 import binascii
@@ -35,6 +35,7 @@ DISCLAIMER = 'X-Crispasr-Spoken-Disclaimer'
 UPLOAD_LIMIT = 50 * 1024 * 1024
 # Chatterbox Multilingual's language ids; English goes to Turbo.
 AUDIO8_LANGUAGES = {'en', 'es'}
+QWEN_BASE_LANGUAGES = {'en', 'es'}
 CHATTERBOX_LANGUAGES = {'ar', 'da', 'de', 'el', 'en', 'es', 'fi', 'fr', 'he', 'hi', 'it', 'ja', 'ko', 'ms', 'nl', 'no',
                         'pl', 'pt', 'ru', 'sv', 'sw', 'tr', 'zh'}
 
@@ -248,6 +249,7 @@ def engines(args):
         'chatterbox-turbo': Engine(4.5, lambda: Cloner(models / 'chatterbox-turbo', turbo=True)),
         'chatterbox-multilingual': Engine(5.5, lambda: Cloner(models / 'chatterbox-multilingual', turbo=False)),
         **audio8_engines(args, env),
+        **qwen_base_engines(args, env),
     }
 
 
@@ -260,6 +262,17 @@ def audio8_engines(args, env):
     worker = Path(__file__).with_name('audio8_worker.py')
     return {'audio8': Engine(4.0, lambda: Child([str(args.audio8_python), str(worker), '--model', str(model),
                                                  '--voice-dir', str(args.voices)], env))}
+
+
+def qwen_base_engines(args, env):
+    """The original Qwen3-TTS Base when its environment and checkpoint are installed. qwen-tts needs transformers 4.57.3,
+    so it runs in its own process with its own Python."""
+    model = args.models / 'qwen3-tts-base'
+    if not (args.qwen_python.is_file() and (model / 'model.safetensors').is_file()):
+        return {}
+    worker = Path(__file__).with_name('qwen_worker.py')
+    return {'qwen-base': Engine(4.0, lambda: Child([str(args.qwen_python), str(worker), '--model', str(model),
+                                                    '--voice-dir', str(args.voices)], env))}
 
 
 def required_files(args):
@@ -291,6 +304,8 @@ MODELS = {
                         engine=lambda r: chatterbox_engine(r.language)),
     'audio8': Rules(voice='required', instructions='forbidden', cfg_scale=False, engine=lambda r: 'audio8',
                     voice_needs_transcript=True),
+    'qwen-base': Rules(voice='required', instructions='forbidden', cfg_scale=False, engine=lambda r: 'qwen-base',
+                       voice_needs_transcript=True),
 }
 
 
@@ -315,6 +330,10 @@ def check(request):
         request.language = request.language or 'en'
         if request.language not in AUDIO8_LANGUAGES:
             raise Problem(400, 'unsupported_language', f'audio8 speaks {", ".join(sorted(AUDIO8_LANGUAGES))}')
+    if request.model == 'qwen-base':
+        request.language = request.language or 'en'
+        if request.language not in QWEN_BASE_LANGUAGES:
+            raise Problem(400, 'unsupported_language', f'qwen-base speaks {", ".join(sorted(QWEN_BASE_LANGUAGES))}')
     if request.model == 'chatterbox':
         request.language = request.language or 'en'
         if request.language not in CHATTERBOX_LANGUAGES:
@@ -513,6 +532,8 @@ def main():
                         help='LD_LIBRARY_PATH for CrispASR only; PyTorch brings its own ROCm libraries')
     parser.add_argument('--audio8-python', type=Path, default=home / '.venv-audio8/bin/python',
                         help='the Python of the Audio8 environment, see README; without it and its checkpoint Audio8 is off')
+    parser.add_argument('--qwen-python', type=Path, default=home / '.venv-qwen/bin/python',
+                        help='the Python of the Qwen environment, see README; without it and its checkpoint qwen-base is off')
     parser.add_argument('--budget-gb', type=float, default=13, help='estimated GPU memory the loaded models may use')
     parser.add_argument('--load-wait', type=float, default=60,
                         help='seconds a request waits for a model to load before it gets a 503')

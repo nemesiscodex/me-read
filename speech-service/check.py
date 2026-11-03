@@ -125,6 +125,9 @@ def main():
             ('audio8-without-transcript', {'model': 'audio8', 'input': ES, 'voice': untold, 'language': 'es'}, 400),
             ('audio8-unsupported-language', {'model': 'audio8', 'input': ES, 'voice': es, 'language': 'fr',
                                              'ref_text': 'x'}, 400),
+            ('qwen-base-without-transcript', {'model': 'qwen-base', 'input': ES, 'voice': untold, 'language': 'es'}, 400),
+            ('qwen-base-unsupported-language', {'model': 'qwen-base', 'input': ES, 'voice': es, 'language': 'fr',
+                                                'ref_text': 'x'}, 400),
             ('qwen-with-voice', {'model': 'qwen', 'input': ES, 'voice': en, 'instructions': 'calm'}, 400),
             ('unknown-voice', {'model': 'breeze', 'input': EN, 'voice': 'check-missing'}, 500),
             ('bad-name', {'model': 'breeze', 'input': EN, 'voice': '../etc'}, 400)):
@@ -152,6 +155,11 @@ def main():
     again = speak(url, out, 'audio8-es-again', model='audio8', input=ES, voice=es, language='es', ref_text=es_text)
     report('audio8-same-seed', identical_samples=same(first, again))
     speak(url, out, 'audio8-en', model='audio8', input=EN, voice=en, language='en', ref_text=en_text)
+    # Optional too: without Qwen3-TTS Base installed these answer 400 model_not_installed.
+    first = speak(url, out, 'qwen-base-es', model='qwen-base', input=ES, voice=es, language='es', ref_text=es_text)
+    again = speak(url, out, 'qwen-base-es-again', model='qwen-base', input=ES, voice=es, language='es', ref_text=es_text)
+    report('qwen-base-same-seed', identical_samples=same(first, again))
+    speak(url, out, 'qwen-base-en', model='qwen-base', input=EN, voice=en, language='en', ref_text=en_text)
     speak(url, out, 'breeze-clone-after-eviction', model='breeze', input=EN, voice=en, language='en')
 
     ref_en, ref_es = embedding(url, en_wav, 'en'), embedding(url, es_wav, 'en')

@@ -11,6 +11,7 @@ Without `--tts-provider`, each language has its own narrator. English uses `chat
 | `chatterbox` (default for English) | English, Spanish, and other languages the model accepts | Mac or GPU machine | Clones the saved voice directly. Needs no transcript. |
 | `audio8` (default for Spanish on a GPU machine) | English and Spanish | GPU machine only | Audio8 TTS Realistic Air, 0.6B, Apache 2.0. Clones the saved voice with a local transcript. About 1.1 seconds of work per second of audio on the Radeon RX 6900 XT. Needs `--tts-url` or a GPU machine with Audio8 installed. |
 | `qwen-base` | English, Spanish, and other languages the model accepts | Mac | Qwen3-TTS 0.6B Base 8-bit, Apache 2.0. Clones the saved voice with a local transcript. About 0.4 to 0.6 seconds of work per second of audio on an M1 Max once loaded. Spanish emotion takes are not offered. |
+| `qwen-base-gpu` | English and Spanish | GPU machine only | The original Qwen3-TTS 0.6B Base checkpoint, not a quantized copy, for the most faithful voice. Clones the saved voice with a local transcript. About 1.2 seconds of work per second of audio on the Radeon RX 6900 XT. Needs `--tts-url` or a GPU machine with it installed. Spanish emotion takes are not offered. |
 | `ming` | English, Spanish, and other languages the model accepts | Mac | Ming 3.0 0.5B 8-bit. Clones the saved voice with a local transcript. Can start a clip with a short stray sound taken from the end of the saved voice. |
 | `fish` | English, Spanish, and other languages the model accepts | Mac | Non-commercial licence. Adds about 6.7 GB. |
 | `breeze` | English only | Mac | Non-commercial licence. |
@@ -26,7 +27,7 @@ To change the narrator, stop the reader and start it again with the new one:
 
 To read English with Audio8 as well, start with `./start --tts-provider audio8`. To keep Spanish on Chatterbox, start with `./start --tts-provider chatterbox`.
 
-A Breeze narrator rejects a Spanish book before it designs any voices or loads a model. Restart with `audio8`, `qwen-base`, `ming`, `chatterbox` or `fish` to read it. me-read never switches narrator on its own.
+A Breeze narrator rejects a Spanish book before it designs any voices or loads a model. Restart with `audio8`, `qwen-base`, `qwen-base-gpu`, `ming`, `chatterbox` or `fish` to read it. me-read never switches narrator on its own.
 
 ## What changes when you switch
 
@@ -59,10 +60,10 @@ Every model downloads on first use into `~/.local/share/me-read/models`. `./star
 | `mlx-community/S3TokenizerV2` | Chatterbox's tokenizer | 0.5 GB |
 | `mlx-community/Breeze-TTS-2-mlx-4bit` | Designs English voices and makes emotion takes. Also the `breeze` narrator. | 3.0 GB |
 | `mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit` | Designs voices for books in other languages | 3.1 GB |
-| `mlx-community/whisper-large-v3-turbo-asr-fp16` | Transcribes a voice before an emotion take, and for the `audio8`, `qwen-base`, `ming`, `fish` and `breeze` narrators | 1.6 GB |
+| `mlx-community/whisper-large-v3-turbo-asr-fp16` | Transcribes a voice before an emotion take, and for the `audio8`, `qwen-base`, `qwen-base-gpu`, `ming`, `fish` and `breeze` narrators | 1.6 GB |
 | `mlx-community/fish-audio-s2-pro-8bit` | The `fish` narrator | 6.7 GB |
 
-`Edge0/Audio8-TTS-Realistic-Air` (2.4 GB, revision `23c305cc013fde378edb459f538317043c993a74`) is installed on the GPU machine, not downloaded by me-read. See [the speech service README](../speech-service/README.md#install-audio8). Sizes are download sizes measured from a model cache, not memory use. me-read pins Whisper to revision `624c19c9af5603fa73b83bce14d4aeea96156d18`. Ming is pinned to revision `d0d1da6f627e4b3f20cc2db6ba4aee86d45343ad`, and Qwen3-TTS Base to `50f45ef0047cde7e84c2ef04326acb8ada2436a7`. Speech runs through `mlx-audio==0.6.1`, which includes Ming’s required prompt fix.
+`Edge0/Audio8-TTS-Realistic-Air` (2.4 GB, revision `23c305cc013fde378edb459f538317043c993a74`) and `Qwen/Qwen3-TTS-12Hz-0.6B-Base` (2.4 GB, revision `5d83992436eae1d760afd27aff78a71d676296fc`, the `qwen-base-gpu` narrator) are installed on the GPU machine, not downloaded by me-read. See [the speech service README](../speech-service/README.md#install-audio8). Sizes are download sizes measured from a model cache, not memory use. me-read pins Whisper to revision `624c19c9af5603fa73b83bce14d4aeea96156d18`. Ming is pinned to revision `d0d1da6f627e4b3f20cc2db6ba4aee86d45343ad`, and Qwen3-TTS Base to `50f45ef0047cde7e84c2ef04326acb8ada2436a7`. Speech runs through `mlx-audio==0.6.1`, which includes Ming’s required prompt fix.
 
 ## How a voice is made
 
