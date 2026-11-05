@@ -31,16 +31,37 @@ To have a paragraph drawn, right-click a line and choose **Draw a picture of thi
 
 In the Cast panel, you can edit how a character looks, draw the portrait again, or have their appearance looked up in the whole book. The lookup can reveal things you have not read yet.
 
+## Reading other text aloud
+
+Another app can have me-read read text in one of its saved voices. T3 Code uses it to read an agent's reply aloud. The clips API in `app.py` has three calls:
+
+| Call | What it does |
+|---|---|
+| `POST /api/clips` with `{"voice": <character id>, "texts": ["…", …]}` | Asks for 1 to 20 texts, each up to 1000 characters, read in the voice of a character from `GET /api/voices`. Returns one clip for each text, in the same order. Answers 404 for an unknown character and 409 when its voice is not ready. |
+| `GET /api/clips/<key>` | Returns one clip. |
+| `GET /api/clips/<key>/audio` | Returns the clip as FLAC once it is ready, and 404 before that. |
+
+A clip is `{"key", "state", "duration", "error"}`. Its state is `idle`, `queued`, `generating`, `ready` or `failed`.
+
+The texts of a request work like the reader's focus. They are queued in the order sent, and every other clip still waiting drops out of the queue. A clip already being read finishes. Sending the same request again changes nothing, so a client repeats it to follow progress. The speech worker reads queued clips after candidate voices and emotion takes, and before the book, because someone is waiting to hear them.
+
+`store.clip_key` makes a clip's key from the character, the revision of their voice, the narrator, and the exact text. The same text in the same voice is read once and then served from `clips/<key>.flac`. A new voice or another `--tts-provider` gives new keys, so a ready clip never goes out of date. A clip is read like a segment. `speakable` drops quotation marks, and a long text is read about 40 words at a time, with the reader's pause after a sentence between the pieces.
+
+A failed clip keeps its error until the server restarts. A restart keeps ready clips and empties the queue, and the client's next request queues its clips again. Clip files are never deleted, including those of a replaced voice or a deleted book.
+
+Browsers let pages from T3 Code's desktop window (`t3code://app`, or `t3code-dev://app` in a development build) and its web client (`http://localhost:3773`) call the API. Pages from other sites cannot read its answers.
+
 ## What is kept on disk
 
 Everything lives in the library folder, `~/.local/share/me-read` by default:
 
 | Path | Contents |
 |---|---|
-| `library.db` | Books, segments, tags, the cast, moments, settings, and the reading position (SQLite) |
+| `library.db` | Books, segments, tags, the cast, moments, clips, settings, and the reading position (SQLite) |
 | `books/<book>/voices/` | Voice samples and emotion takes |
 | `books/<book>/audio/` | One FLAC clip per segment |
 | `books/<book>/portraits/`, `books/<book>/moments/` | Pictures |
+| `clips/` | Text read aloud for other apps, one FLAC clip per key |
 | `models/` | Downloaded models |
 | `launcher.json` | What `./start` remembers: your consent statement and the GPU machine |
 

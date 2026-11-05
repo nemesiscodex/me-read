@@ -1,4 +1,5 @@
 """SQLite storage. The database is the single source of truth for what is tagged, voiced and spoken."""
+import hashlib
 import json
 import re
 import shutil
@@ -86,7 +87,14 @@ CREATE TABLE IF NOT EXISTS voice_take (
   state TEXT NOT NULL DEFAULT 'none' CHECK (state IN ('none', 'queued', 'making', 'ready', 'failed')),
   rev INTEGER NOT NULL DEFAULT 0, made_from INTEGER, error TEXT, semitones {SEMITONES}, PRIMARY KEY (character_id, emotion));
 CREATE TABLE IF NOT EXISTS emotion_direction (emotion TEXT PRIMARY KEY, specification TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS clip (
+  key TEXT PRIMARY KEY, character_id INTEGER NOT NULL REFERENCES character(id) ON DELETE CASCADE,
+  voice_rev INTEGER NOT NULL, language TEXT NOT NULL, text TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'idle' CHECK (state IN ('idle', 'queued', 'generating', 'ready', 'failed')),
+  queue_pos INTEGER, duration REAL, error TEXT, requested_at REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS clip_queue ON clip (queue_pos) WHERE state = 'queued';
 """
+CLIP = 'key, state, duration, error'
 SEGMENT = 'id, block_id, seq, text, kind, character_id, emotion, audio_state, audio_rev, duration, error, leveled'
 CHARACTER = ('c.id, c.book_id, c.name, c.role, c.gender, c.age, c.pitch, c.description, c.voice_state, c.voice_rev, '
              'c.error, c.draft_state, c.draft_rev, c.draft_status, c.draft_updated_at, c.appearance, c.portrait_state, c.portrait_rev, c.portrait_error, (SELECT COUNT(*) FROM segment s WHERE s.character_id = c.id AND s.kind = \'speech\') AS line_count')
@@ -157,6 +165,8 @@ class Store:
         self.run("UPDATE character SET portrait_state = 'none' WHERE portrait_state = 'drawing'")
         self.run("UPDATE moment SET image_state = 'none' WHERE image_state = 'drawing'")
         self.run("UPDATE voice_take SET state = 'queued' WHERE state = 'making'")
+        # Clips wait for their client to ask again, as the reader's focus does. A failed clip gets another try.
+        self.run("UPDATE clip SET state = 'idle' WHERE state != 'ready'")
 
     def _allow_new_emotions(self):
         """Let emotions added after the library was made past its checks. SQLite cannot alter a CHECK, but widening
@@ -260,6 +270,9 @@ class Store:
 
     def moment_path(self, book_id, moment_id):
         return self.book_dir(book_id) / 'moments' / f'{moment_id}.png'
+
+    def clip_path(self, key):
+        return self.home / 'clips' / f'{key}.flac'
 
     # Settings
 
@@ -439,6 +452,9 @@ class Store:
             self.run("UPDATE voice_take SET state = 'none', rev = rev + 1, made_from = NULL, error = NULL "
                      'WHERE character_id = ?', (character_id,))
             self.invalidate_audio('character_id = ?', (character_id,))
+            # A clip's key names the old voice, so no request asks for it again, and one in flight lands nowhere.
+            self.run("UPDATE clip SET state = 'idle' WHERE character_id = ? AND state IN ('queued', 'generating')",
+                     (character_id,))
 
     def reuse_voice(self, character_id, source_id, source_rev):
         """Copy a saved voice independently of its book. Refuse a sample changed since it was offered."""
@@ -572,3 +588,33 @@ class Store:
     def redraw_moments(self, where, args=()):
         self.run("UPDATE moment AS m SET image_state = 'none', image_rev = image_rev + 1, error = NULL "
                  f"WHERE m.kind = 'picture' AND {where}", args)
+
+    # Clips read aloud for other apps
+
+    def clip(self, key):
+        return self.one(f'SELECT {CLIP} FROM clip WHERE key = ?', (key,))
+
+    def request_clips(self, character, language, identity, texts):
+        """Queue the clips of `texts` in their order, making the ones not seen before, and take every other clip out of
+        the queue, the way a new focus replaces the old one. Clips ready, being read or failed stay as they are.
+        Returns the clips in the order of `texts`."""
+        keys = [clip_key(character, identity, text) for text in texts]
+        marks, now = ','.join('?' * len(keys)), time.time()
+        with self.lock:
+            self.db.executemany('INSERT OR IGNORE INTO clip (key, character_id, voice_rev, language, text, requested_at) '
+                                'VALUES (?, ?, ?, ?, ?, ?)',
+                                [(key, character['id'], character['voice_rev'], language, text, now)
+                                 for key, text in zip(keys, texts)])
+            self.run(f'UPDATE clip SET requested_at = ? WHERE key IN ({marks})', (now, *keys))
+            self.run(f"UPDATE clip SET state = 'idle' WHERE state = 'queued' AND key NOT IN ({marks})", keys)
+            self.db.executemany("UPDATE clip SET state = 'queued', queue_pos = ? WHERE key = ? AND state IN ('idle', 'queued')",
+                                list(enumerate(dict.fromkeys(keys))))
+            found = {clip['key']: clip for clip in self.all(f'SELECT {CLIP} FROM clip WHERE key IN ({marks})', keys)}
+        return [found[key] for key in keys]
+
+
+def clip_key(character, identity, text):
+    """The address of a clip, made from who reads it, the revision of their voice, the narrator, and the exact words. A
+    new voice or narrator gives new addresses, so a ready clip never goes out of date."""
+    named = json.dumps([character['id'], character['voice_rev'], identity, text], sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(named.encode()).hexdigest()[:32]

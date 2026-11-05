@@ -7,12 +7,13 @@ import shutil
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, StringConstraints, field_validator
 
 from . import epub, scenes, speech, tagger
 from .emotions import DIRECTIONS, EMOTIONS
@@ -23,6 +24,9 @@ Gender = Literal['male', 'female', 'unknown']
 Age = Literal['child', 'teen', 'adult', 'elderly']
 Pitch = Literal['low', 'medium', 'high']
 Emotion = Literal[EMOTIONS]
+# The pages of T3 Code that may call the API from another origin, its desktop window (t3code://app, or t3code-dev://app
+# in a development build) and its web client. They read replies aloud through the clips API.
+T3_ORIGINS = ['t3code://app', 't3code-dev://app', 'http://localhost:3773', 'http://127.0.0.1:3773']
 
 
 class CharacterInput(BaseModel):
@@ -110,6 +114,12 @@ class Shift(Semitones):
         return value
 
 
+class ClipRequest(BaseModel):
+    voice: int
+    texts: list[Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1000)]] = Field(
+        min_length=1, max_length=20)
+
+
 class Hub:
     """Fans events out to the browsers watching a book. Workers publish from their own threads."""
 
@@ -182,6 +192,7 @@ def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers
         pipeline.shutdown()
 
     app = FastAPI(title='me-read', lifespan=lifespan)
+    app.add_middleware(CORSMiddleware, allow_origins=T3_ORIGINS, allow_methods=['GET', 'POST'], allow_headers=['Content-Type'])
     app.state.store, app.state.pipeline, app.state.hub = store, pipeline, hub
 
     def found(row, what):
@@ -536,6 +547,33 @@ def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers
             store.take_path(character, emotion).unlink(missing_ok=True)
         announce(character['book_id'], 'character_id = ?', (body.into,))
         announce_moments(character['book_id'], FEATURING, (body.into,))
+
+    @app.post('/api/clips')
+    def request_clips(body: ClipRequest):
+        """Read `texts` aloud in a saved voice, first to last, ahead of the book. Sending the same body again is how a
+        client follows their progress."""
+        with store.lock:
+            character = character_of(body.voice)
+            if character['voice_state'] != 'ready' or not store.voice_path(character).is_file():
+                raise HTTPException(409, f"{character['name']}'s voice is not ready; choose one listed by /api/voices")
+            language = store.one('SELECT language FROM book WHERE id = ?', (character['book_id'],))['language']
+            clips = store.request_clips(character, language, engine.provider_for(language).identity, body.texts)
+        pipeline.nudge()
+        return clips
+
+    def clip_of(key):
+        return found(store.clip(key), 'clip')
+
+    @app.get('/api/clips/{key}')
+    def get_clip(key: str):
+        return clip_of(key)
+
+    @app.get('/api/clips/{key}/audio')
+    def clip_audio(key: str):
+        path = store.clip_path(key)
+        if clip_of(key)['state'] != 'ready' or not path.exists():
+            raise HTTPException(404, 'this clip is not read yet')
+        return FileResponse(path, media_type='audio/flac', headers={'Cache-Control': 'private, max-age=31536000, immutable'})
 
     @app.get('/api/settings')
     def get_settings():

@@ -16,7 +16,7 @@ import numpy as np
 import soundfile as sf
 
 from . import images, scenes, speech, tagger
-from .segment import speakable
+from .segment import chunks, speakable
 from .store import illustrating
 
 log = logging.getLogger('meread')
@@ -31,6 +31,8 @@ LEVEL_BATCH = 20
 CONTEXT_BLOCKS = 40
 MAX_FOCUS = 400
 SILENCE = 0.6, 24000
+# Seconds of silence between the pieces of a long clip, the reader's default pause after a sentence.
+PIECE_PAUSE = 0.4
 WORKERS = 'tagger', 'scenes', 'speech', 'images'
 # What a drawing is claimed and landed through: table, state column, revision column, error column.
 PORTRAIT = 'character', 'portrait_state', 'portrait_rev', 'portrait_error'
@@ -231,8 +233,9 @@ class Pipeline:
     # Voices and clips
 
     def speech_step(self):
-        """Generate the next missing clip in focus, designing its voice or making its take first when needed. With
-        nothing to make, level a few of the clips made before clips were leveled."""
+        """Generate the next missing clip in focus, designing its voice or making its take first when needed. Clips a
+        client asked for come before the book, because someone is waiting to hear them. With nothing to make, level a
+        few of the clips made before clips were leveled."""
         return self._speak_next() or self.level_step()
 
     def _speak_next(self):
@@ -247,6 +250,11 @@ class Pipeline:
         if queued:
             self.make_take(self.store.character(queued['character_id']),
                            self.store.take(queued['character_id'], queued['emotion']))
+            return True
+        clip = self.store.one("SELECT key, character_id, language, text FROM clip WHERE state = 'queued' "
+                              'ORDER BY queue_pos LIMIT 1')
+        if clip:
+            self.read_clip(clip, self.store.character(clip['character_id']))
             return True
         focus = self.focus
         if not focus:
@@ -481,6 +489,36 @@ class Pipeline:
             self.store.run("UPDATE segment SET audio_state = 'failed', error = ? WHERE id = ? AND audio_rev = ? "
                            "AND audio_state = 'generating'", (str(e)[:300], *claim))
         self._publish_segments(book_id, 'id = ?', (seg['id'],))
+
+    def read_clip(self, clip, character):
+        """Read text a client asked for in a character's saved voice. A narrator cuts a long line short, so the text is
+        read a segment-sized piece at a time, with the reader's pause after a sentence between pieces."""
+        key = clip['key']
+        if not self.store.run("UPDATE clip SET state = 'generating' WHERE key = ? AND state = 'queued'", (key,)).rowcount:
+            return
+        self._say('speech', f"Reading aloud as {character['name']}")
+
+        def settle(state, duration=None, error=None):
+            return self.store.run("UPDATE clip SET state = ?, duration = ?, error = ? WHERE key = ? AND state = 'generating'",
+                                  (state, duration, error, key)).rowcount
+        try:
+            voice = self.store.voice_path(character)
+            said = [self.engine.speak(text, voice, seed=42, language=clip['language'])
+                    for text in map(speakable, chunks(clip['text'])) if text]
+            if said:
+                rate = said[0][1]
+                pause = np.zeros(int(PIECE_PAUSE * rate), dtype='float32')
+                audio = np.concatenate([part for piece, _ in said for part in (pause, piece)][1:])
+            else:
+                audio, rate = np.zeros(int(SILENCE[0] * SILENCE[1]), dtype='float32'), SILENCE[1]
+            self._land(lambda tmp: sf.write(tmp, audio, rate, format='FLAC', subtype='PCM_16'), self.store.clip_path(key),
+                       lambda: settle('ready', len(audio) / rate))
+        except speech.Unavailable as e:
+            self._wait_for_speech(e, f'clip {key}')
+            settle('queued')
+        except Exception as e:
+            log.exception('speech failed for clip %s', key)
+            settle('failed', error=str(e)[:300])
 
     def find_appearance(self, character):
         """Ask how a character looks from every paragraph of the book about them, and save it. Raises TaggerError."""
