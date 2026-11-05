@@ -75,11 +75,11 @@ Every model downloads on first use into `~/.local/share/me-read/models`. `./star
 
 ## Transcripts
 
-Qwen3-TTS Base, Ming, Fish and Breeze need the exact words spoken in the voice they clone. Before cloning, me-read clips the voice to at most 15 seconds and transcribes those bytes with Whisper on the Mac. Whisper detects the language itself. A transcript is an automatic estimate. If transcription fails or comes back empty, the clip fails with an error instead of guessing the words. me-read caches up to 24 transcripts, keyed by the audio content, so a replaced voice always gets a new transcript.
+Qwen3-TTS Base, Ming, Fish and Breeze need the exact words spoken in the voice they clone. When saving an uploaded or designed voice, me-read keeps at most 15 seconds. Before cloning, it transcribes the full saved recording with Whisper on the Mac. Whisper detects the language itself. A transcript is an automatic estimate. If transcription fails or comes back empty, the clip fails with an error instead of guessing the words. me-read caches up to 24 transcripts, keyed by the audio content, so a replaced voice always gets a new transcript.
 
 Chatterbox does not use transcripts. Audio8 needs the same Whisper transcript, made on the Mac and sent with each request.
 
-A designed sample is cut at 15 seconds, often in the middle of a word, and Whisper then writes the word the speaker never finished. A Qwen3-TTS narrator reads that transcript and says the missing word at the start of its clip. For `qwen-base` and `qwen-base-gpu`, me-read cuts the sample at its last pause, transcribes that, and adds a second of silence. Their stored clips are made again once when you first use a version with this change.
+For `qwen-base` and `qwen-base-gpu`, me-read preserves the full saved reference instead of shortening it at a pause. Cutting inside a phrase can make Whisper invent its ending, which Qwen then repeats before the requested line. Qwen receives the full recording plus one second of silence, with a transcript of the recording itself. Their stored clips are made again once when switching from a version that shortened references at pauses.
 
 Audio8 stops its audio on the last word, and `trim` cuts Qwen's own fade-out at a fixed loudness. For `audio8`, `qwen-base` and `qwen-base-gpu`, me-read keeps the model's fade-out down to 50 dB under the peak, fades a clip that still sounds at its end over 80 ms, and leaves 0.2 seconds of silence after the last word. The other narrators are unchanged.
 

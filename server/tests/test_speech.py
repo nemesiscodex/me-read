@@ -152,38 +152,17 @@ def speech_with_pauses(path, parts, rate=24000):
     return path
 
 
-def seconds_of(wav):
-    audio, rate = sf.read(io.BytesIO(wav))
-    return len(audio) / rate
-
-
-def test_a_sample_that_ends_mid_word_is_cut_at_its_last_pause(tmp_path):
-    wav = speech_with_pauses(tmp_path / 'v.wav', [(4, True), (0.4, False), (4, True), (0.4, False), (3, True)]).read_bytes()
-    assert seconds_of(speech.cut_at_pause(wav)) == pytest.approx(8.45, abs=0.03)
-
-
-@pytest.mark.parametrize('parts', [
-    [(4, True), (0.4, False), (4, True), (0.5, False)],
-    [(9, True)],
-    [(2, True), (0.4, False), (7, True)],
-    [(4, True), (0.1, False), (6, True)],
-])
-def test_a_sample_that_already_ends_quietly_or_has_no_usable_pause_is_left_alone(tmp_path, parts):
-    wav = speech_with_pauses(tmp_path / 'v.wav', parts).read_bytes()
-    assert speech.cut_at_pause(wav) == wav
-
-
 @pytest.mark.parametrize('provider', ['qwen-base', 'ming'])
-def test_only_narrators_that_ask_for_it_get_their_sample_cut(tmp_path, models, provider):
-    voice = speech_with_pauses(tmp_path / 'voice.wav', [(4, True), (0.4, False), (4, True), (0.4, False), (3, True)])
+@pytest.mark.parametrize('seconds', [11.8, 15])
+def test_cloning_preserves_the_full_saved_reference_including_speech_after_pauses(tmp_path, models, provider, seconds):
+    voice = speech_with_pauses(tmp_path / 'voice.wav', [
+        (4, True), (0.6, False), (4, True), (0.4, False), (seconds - 9, True),
+    ])
+    original = voice.read_bytes()
     speech.Engine(tmp_path / 'hub', provider).speak('Hello.', voice, 1)
-    sent = models.spoken[-1]['wav']
-    heard = sf.read(io.BytesIO(sent))[0]
-    if provider == 'qwen-base':
-        assert len(heard) / 24000 == pytest.approx(8.45 + 1.0, abs=0.03), 'cut at the last pause, then a second of silence'
-        assert len(models.transcribed[0]) / 16000 == pytest.approx(8.45, abs=0.1), 'Whisper hears only the cut sample'
-    else:
-        assert len(heard) / 24000 == pytest.approx(11.8 + 1.0, abs=0.06)
+    assert models.spoken[-1]['wav'] == speech.with_silence(original, 1.0)
+    assert len(models.transcribed[0]) / 16000 == pytest.approx(seconds, abs=0.01)
+    assert voice.read_bytes() == original
 
 
 def test_a_soft_end_fades_a_clip_that_stops_on_its_last_word_and_leaves_a_pause():

@@ -57,8 +57,6 @@ class Provider:
     retakes: int = 1
     # Seconds of silence after the saved sample, for a model that otherwise continues the sample's last word into the clip.
     reference_silence: float = 0
-    # End the saved sample at its last pause when it ends mid-word, so the transcript only names words the audio says.
-    cut_at_pause: bool = False
     # End each clip with the model's own fade-out and a little silence, for a model that stops on the last word.
     soft_end: bool = False
 
@@ -77,7 +75,6 @@ class Provider:
                 **({'transcription_policy': TRANSCRIPTION_POLICY} if self.reference != 'conditionals' else {}),
                 **({'spoken_disclaimer': False} if self.reference == 'remote' else {}),
                 **({'reference_silence': self.reference_silence} if self.reference_silence else {}),
-                **({'cut_at_pause': True} if self.cut_at_pause else {}),
                 **({'soft_end': True} if self.soft_end else {})}
 
     def validate_language(self, language):
@@ -99,10 +96,10 @@ PROVIDERS = {
     'breeze': Provider('breeze', (BREEZE,), ('en',), 'path'),
     'breeze-gguf': Provider('breeze-gguf', ('cstr/breeze-tts-2-GGUF@q4_k',), ('en',), 'remote', 'breeze'),
     'audio8': Provider('audio8', (AUDIO8,), ('en', 'es'), 'remote', 'audio8', retakes=3, soft_end=True),
-    'qwen-base': Provider('qwen-base', (QWEN_BASE,), None, 'path', retakes=3, reference_silence=1.0, cut_at_pause=True,
+    'qwen-base': Provider('qwen-base', (QWEN_BASE,), None, 'path', retakes=3, reference_silence=1.0,
                           soft_end=True),
     'qwen-base-gpu': Provider('qwen-base-gpu', (QWEN_BASE_ORIGINAL,), ('en', 'es'), 'remote', 'qwen-base', retakes=3,
-                              reference_silence=1.0, cut_at_pause=True, soft_end=True),
+                              reference_silence=1.0, soft_end=True),
 }
 
 
@@ -499,33 +496,6 @@ def with_silence(wav, seconds):
     return wav_of(np.concatenate([audio, np.zeros((int(seconds * rate), audio.shape[1]), dtype='float32')]), rate)
 
 
-def cut_at_pause(wav, floor=-30, pause=0.2, minimum=MIN_SAMPLE_SECONDS):
-    """The WAV bytes cut at the last pause of `pause` seconds, or unchanged when the sample already ends quietly or has
-    no pause that leaves `minimum` seconds. A designed sample is cut at 15 seconds, often inside a word, and a model that
-    reads the transcript of those seconds finishes the missing word at the start of its clip."""
-    audio, rate = sf.read(io.BytesIO(wav), dtype='float32', always_2d=True)
-    audio = audio.mean(axis=1)
-    size = int(FRAME * rate)
-    frames = len(audio) // size
-    if frames < 2:
-        return wav
-    level = 20 * np.log10(np.sqrt((audio[:frames * size].reshape(frames, size) ** 2).mean(axis=1)) + 1e-9)
-    quiet = level < level.max() + floor
-    if quiet[-2:].all():
-        return wav
-    runs, start = [], None
-    for i, is_quiet in enumerate(quiet):
-        if is_quiet and start is None:
-            start = i
-        if not is_quiet and start is not None:
-            runs.append((start, i))
-            start = None
-    cuts = [begin for begin, end in runs if (end - begin) * FRAME >= pause and begin * FRAME >= minimum]
-    if not cuts:
-        return wav
-    return wav_of(audio[:int((cuts[-1] + 1) * size)], rate)
-
-
 class Engine:
     """The selected narrator, Breeze to design English voices and direct takes, the Qwen3 voice designer for other
     languages, and Chatterbox to tell voices apart. One worker owns all model calls."""
@@ -763,15 +733,11 @@ class Engine:
         key = (hashlib.sha256(wav).hexdigest(), TRANSCRIBER, TRANSCRIBER_REVISION, TRANSCRIPTION_POLICY)
         return self._cached(self.transcripts, key, transcribe)
 
-    def _prepared(self, voice_path, provider):
-        wav = Path(voice_path).read_bytes()
-        return cut_at_pause(wav) if provider.cut_at_pause else wav
-
     def _reference(self, voice_path, provider):
         from mlx_audio.tts.utils import load_model
         from mlx_audio.utils import load_audio
 
-        wav = self._prepared(voice_path, provider)
+        wav = Path(voice_path).read_bytes()
 
         def prepare():
             text = self._transcript(wav)
@@ -825,7 +791,7 @@ class Engine:
 
     def _gpu_line(self, text, voice_path, seed, language):
         provider = self.provider_for(language)
-        wav = self._prepared(voice_path, provider)
+        wav = Path(voice_path).read_bytes()
         service = provider.service
         if service == 'chatterbox':
             return self._cloned('chatterbox', wav, text, seed, language=language)

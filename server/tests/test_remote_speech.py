@@ -17,7 +17,7 @@ import soundfile as sf
 from meread import pipeline as pipeline_module
 from meread import speech
 from meread.emotions import DIRECTIONS
-from test_speech import models, recording  # noqa: F401  the local stubs the remote engine must never reach
+from test_speech import models, recording, speech_with_pauses  # noqa: F401  the local stubs the remote engine must never reach
 
 CONSENT = 'I own these reference voices and allow them to be cloned for my own books.'
 
@@ -762,12 +762,12 @@ PINNED_IDENTITY = {
         {'id': 'cstr/breeze-tts-2-GGUF@q4_k'}, {'id': 'mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit'},
         {'id': 'mlx-community/whisper-large-v3-turbo-asr-fp16', 'revision': '624c19c9af5603fa73b83bce14d4aeea96156d18'}]},
     'qwen-base': {'provider': 'qwen-base', 'policy': 1, 'transcription_policy': 'whisper-auto-language-16khz-v1',
-                  'reference_silence': 1.0, 'cut_at_pause': True, 'soft_end': True, 'models': [
+                  'reference_silence': 1.0, 'soft_end': True, 'models': [
         {'id': 'mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit', 'revision': '50f45ef0047cde7e84c2ef04326acb8ada2436a7'},
         {'id': 'mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit'},
         {'id': 'mlx-community/whisper-large-v3-turbo-asr-fp16', 'revision': '624c19c9af5603fa73b83bce14d4aeea96156d18'}]},
     'qwen-base-gpu': {'provider': 'qwen-base-gpu', 'policy': 1, 'transcription_policy': 'whisper-auto-language-16khz-v1',
-                      'spoken_disclaimer': False, 'reference_silence': 1.0, 'cut_at_pause': True, 'soft_end': True,
+                      'spoken_disclaimer': False, 'reference_silence': 1.0, 'soft_end': True,
                       'models': [
         {'id': 'Qwen/Qwen3-TTS-12Hz-0.6B-Base', 'revision': '5d83992436eae1d760afd27aff78a71d676296fc'},
         {'id': 'mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit'},
@@ -834,16 +834,21 @@ def test_audio8_can_narrate_english_too_when_chosen(tmp_path, models, speech_ser
         ('audio8', 'en', 'The saved words.')]
 
 
-def test_qwen_base_gpu_narrates_on_the_service_with_the_transcript_and_language(tmp_path, models, speech_server):
+@pytest.mark.parametrize('seconds', [11.8, 15])
+def test_qwen_base_gpu_narrates_on_the_service_with_the_transcript_and_language(tmp_path, models, speech_server, seconds):
     models.transcript = 'The saved words.'
     engine = gpu_engine(tmp_path, speech_server, 'qwen-base-gpu')
-    voice = recording(tmp_path / 'voice.wav')
+    voice = speech_with_pauses(tmp_path / 'voice.wav', [
+        (4, True), (0.6, False), (4, True), (0.4, False), (seconds - 9, True),
+    ])
     engine.speak('Hola.', voice, 42, language='es')
     padded = speech.with_silence(voice.read_bytes(), 1.0)
     assert speech_server.speeches == [asked(model='qwen-base', input='Hola.', voice=name_for(padded), language='es',
                                             ref_text='The saved words.', seed=42)]
     assert speech_server.voices == {name_for(padded): padded}, 'the service gets the voice followed by a second of silence'
     assert models.loads == [speech.TRANSCRIBER], 'Whisper here, the model on the service'
+
+    assert len(models.transcribed[0]) / 16000 == pytest.approx(seconds, abs=0.01)
 
 
 def test_a_rambling_qwen_base_gpu_line_is_retaken_with_the_next_seed(tmp_path, models, speech_server):
