@@ -2,6 +2,7 @@ import json
 import logging
 import sys
 
+import huggingface_hub
 import pytest
 import uvicorn
 
@@ -11,12 +12,12 @@ from meread.pipeline import Pipeline
 
 
 def forbid_snapshot(*args, **kwargs):
-    pytest.fail('help or startup attempted a model download')
+    pytest.fail('help or startup looked for a model')
 
 
 def test_help_lists_registry_choices_and_creates_no_library(tmp_path, monkeypatch, capsys):
     home = tmp_path / 'library'
-    monkeypatch.setattr(speech.Engine, '_snapshot', forbid_snapshot)
+    monkeypatch.setattr(huggingface_hub, 'snapshot_download', forbid_snapshot)
     monkeypatch.setattr(__main__, 'create_app', lambda *args, **kwargs: pytest.fail('help created an app'))
     monkeypatch.setattr(sys, 'argv', ['meread', '--home', str(home), '--help'])
     with pytest.raises(SystemExit) as exited:
@@ -24,7 +25,7 @@ def test_help_lists_registry_choices_and_creates_no_library(tmp_path, monkeypatc
     assert exited.value.code == 0
     help_text = ' '.join(capsys.readouterr().out.split())
     assert '--tts-provider {ming,chatterbox,fish,breeze,breeze-gguf,audio8,qwen-base,qwen-base-gpu}' in help_text
-    assert 'default: chatterbox' in help_text and 'breeze is English-only' in help_text
+    assert 'default: chatterbox for English' in help_text and 'breeze reads English only and runs on this Mac' in help_text
     assert '--tts-url' in help_text and 'for example http://127.0.0.1:8781' in help_text and 'you may use the reference voices' in help_text
     assert not home.exists()
 
@@ -32,15 +33,12 @@ def test_help_lists_registry_choices_and_creates_no_library(tmp_path, monkeypatc
 @pytest.mark.parametrize('provider', [None, 'chatterbox', 'fish', 'breeze'])
 def test_cli_wires_the_narrator_without_loading_any_models(tmp_path, monkeypatch, provider):
     apps = []
-    monkeypatch.setattr(speech.Engine, '_snapshot', forbid_snapshot)
+    monkeypatch.setattr(huggingface_hub, 'snapshot_download', forbid_snapshot)
     monkeypatch.setattr(uvicorn.Server, 'run', lambda self: apps.append(self.config.app))
     monkeypatch.setattr(sys, 'argv', ['meread', '--home', str(tmp_path), *(['--tts-provider', provider] if provider else [])])
     __main__.main()
-    engine = apps[0].state.pipeline.engine
-    assert {engine.provider_for(language).name for language in speech.LANGUAGES} == {provider or 'chatterbox'}
-    assert engine.narrator is engine.chatterbox is engine.multilingual is engine.designer is None
     identity = json.loads(apps[0].state.store.one('SELECT identity FROM generation_identity')['identity'])
-    assert identity == speech.PROVIDERS[provider or 'chatterbox'].identity
+    assert identity == speech.NARRATORS[provider or 'chatterbox'].identity
     assert apps[0].state.store.settings()['provider'] == 'claude'
 
 
@@ -105,16 +103,13 @@ def test_every_narrator_wires_the_speech_service_and_logs_where_work_runs_but_ne
         tmp_path, monkeypatch, caplog, provider, narration):
     apps = []
     caplog.set_level(logging.INFO)
-    monkeypatch.setattr(speech.Engine, '_snapshot', forbid_snapshot)
+    monkeypatch.setattr(huggingface_hub, 'snapshot_download', forbid_snapshot)
     monkeypatch.setattr(uvicorn.Server, 'run', lambda self: apps.append(self.config.app))
     monkeypatch.setattr(sys, 'argv', ['meread', '--home', str(tmp_path), '--tts-provider', provider,
                                       '--tts-url', 'http://127.0.0.1:8781', '--tts-consent', CONSENT])
     __main__.main()
-    engine = apps[0].state.pipeline.engine
-    assert engine.remote.host == '127.0.0.1:8781'
-    assert engine.narrator is engine.chatterbox is engine.multilingual is engine.designer is engine.breeze is None
     identity = json.loads(apps[0].state.store.one('SELECT identity FROM generation_identity')['identity'])
-    assert identity == speech.PROVIDERS[provider].identity
+    assert identity == speech.NARRATORS[provider].identity
     assert (f'Narrator {provider} on {narration},' in caplog.text and
             'voice design, emotion takes and speaker comparison on the speech service at 127.0.0.1:8781' in caplog.text)
     assert CONSENT not in caplog.text
@@ -123,13 +118,13 @@ def test_every_narrator_wires_the_speech_service_and_logs_where_work_runs_but_ne
 def test_by_default_a_speech_service_narrates_spanish_with_audio8_and_english_with_chatterbox(tmp_path, monkeypatch, caplog):
     apps = []
     caplog.set_level(logging.INFO)
-    monkeypatch.setattr(speech.Engine, '_snapshot', forbid_snapshot)
+    monkeypatch.setattr(huggingface_hub, 'snapshot_download', forbid_snapshot)
     monkeypatch.setattr(uvicorn.Server, 'run', lambda self: apps.append(self.config.app))
     monkeypatch.setattr(sys, 'argv', ['meread', '--home', str(tmp_path), '--tts-url', 'http://127.0.0.1:8781',
                                       '--tts-consent', CONSENT])
     __main__.main()
     engine = apps[0].state.pipeline.engine
-    assert [engine.provider_for(language).name for language in ('en', 'es')] == ['chatterbox', 'audio8']
+    assert [engine.identity(language)['provider'] for language in ('en', 'es')] == ['chatterbox', 'audio8']
     identity = json.loads(apps[0].state.store.one('SELECT identity FROM generation_identity')['identity'])
     assert identity == engine.generation_identity and set(identity['narrators']) == {'en', 'es'}
     assert 'Narrator chatterbox on the speech service at 127.0.0.1:8781, languages en;' in caplog.text
@@ -138,7 +133,7 @@ def test_by_default_a_speech_service_narrates_spanish_with_audio8_and_english_wi
 
 def test_without_a_url_everything_is_logged_as_running_on_this_mac(tmp_path, monkeypatch, caplog):
     caplog.set_level(logging.INFO)
-    monkeypatch.setattr(speech.Engine, '_snapshot', forbid_snapshot)
+    monkeypatch.setattr(huggingface_hub, 'snapshot_download', forbid_snapshot)
     create_app(tmp_path, run_workers=False)
     assert f'Narrator chatterbox on this Mac with {speech.CHATTERBOX},' in caplog.text
     assert 'voice design, emotion takes and speaker comparison on this Mac' in caplog.text
@@ -148,26 +143,26 @@ def test_identity_reconciliation_is_complete_before_workers_start(tmp_path, monk
     from fastapi.testclient import TestClient
 
     observed = []
-    monkeypatch.setattr(speech.Engine, '_snapshot', forbid_snapshot)
+    monkeypatch.setattr(huggingface_hub, 'snapshot_download', forbid_snapshot)
     monkeypatch.setattr(Pipeline, 'start', lambda self: observed.append(
         json.loads(self.store.one('SELECT identity FROM generation_identity')['identity'])))
     app = create_app(tmp_path, tts_provider='fish')
     with TestClient(app):
-        assert observed == [speech.PROVIDERS['fish'].identity]
+        assert observed == [speech.NARRATORS['fish'].identity]
 
 
 def test_injected_engine_identity_is_used_instead_of_the_default_cli_choice(tmp_path, monkeypatch):
-    monkeypatch.setattr(speech.Engine, '_snapshot', forbid_snapshot)
+    monkeypatch.setattr(huggingface_hub, 'snapshot_download', forbid_snapshot)
     engine = speech.Engine(tmp_path / 'hub', 'breeze')
     app = create_app(tmp_path, engine=engine, run_workers=False)
     identity = json.loads(app.state.store.one('SELECT identity FROM generation_identity')['identity'])
-    assert identity == speech.PROVIDERS['breeze'].identity
+    assert identity == speech.NARRATORS['breeze'].identity
 
 
 @pytest.mark.parametrize('url', ['', 'http://127.0.0.1:8766'])
 def test_image_service_setting_is_applied_before_server_starts(tmp_path, monkeypatch, url):
     seen = []
-    monkeypatch.setattr(speech.Engine, '_snapshot', forbid_snapshot)
+    monkeypatch.setattr(huggingface_hub, 'snapshot_download', forbid_snapshot)
     monkeypatch.setattr(uvicorn.Server, 'run', lambda self: seen.append(self.config.app.state.store.settings()))
     monkeypatch.setattr(sys, 'argv', ['meread', '--home', str(tmp_path), '--image-url', url])
     __main__.main()

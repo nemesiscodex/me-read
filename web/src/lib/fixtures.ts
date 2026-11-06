@@ -25,6 +25,7 @@ export function block(id: number, segments: Segment[], patch: Partial<Block> = {
     chapter: 0,
     tag: 'p',
     tag_state: 'tagged',
+    writer_id: null,
     segments: segments.map((s) => ({ ...s, block_id: id })),
     ...patch,
   }

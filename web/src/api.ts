@@ -1,146 +1,18 @@
 import type { Place } from './lib/pages'
+import type { Block, BookDetail, BookSummary, Character, Emotion, Moment, ReusableVoice, Segment, Take } from './generated/server'
 
-export type Gender = 'male' | 'female' | 'unknown'
-export type Age = 'child' | 'teen' | 'adult' | 'elderly'
-export type Pitch = 'low' | 'medium' | 'high'
-export type Role = 'narrator' | 'named' | 'extra'
-export type VoiceState = 'none' | 'designing' | 'ready' | 'failed'
-export type TagState = 'pending' | 'tagging' | 'tagged' | 'failed'
-export type AudioState = 'none' | 'generating' | 'ready' | 'failed'
-export type DraftState = 'none' | 'queued' | 'designing' | 'ready' | 'failed'
-export type DrawState = 'none' | 'drawing' | 'ready' | 'failed'
+export * from './generated/server'
+
+export type Gender = Character['gender']
+export type Age = Character['age']
+export type Pitch = Character['pitch']
+export type VoiceState = Character['voice_state']
+export type TagState = Block['tag_state']
+export type TakeState = Take['state']
 export type Provider = 'claude' | 'codex'
-export const EMOTIONS = ['neutral', 'happy', 'sad', 'angry', 'scared', 'whisper', 'yelling', 'shouting', 'angry_shouting'] as const
-export type Emotion = (typeof EMOTIONS)[number]
 export const EMOTION_LABELS: Record<Emotion, string> = {
   neutral: 'Normal', happy: 'Happy', sad: 'Sad', angry: 'Angry (restrained)', scared: 'Scared', whisper: 'Whisper',
   yelling: 'Calling out', shouting: 'Shouting', angry_shouting: 'Angry shouting',
-}
-/** 'none' also for a take made from a voice the character no longer has; it is made again when a line needs it. */
-export type TakeState = 'none' | 'queued' | 'making' | 'ready' | 'failed'
-
-/** The character's voice directed into an emotion. Lines in that emotion are read from it once it is ready. */
-export interface Take {
-  emotion: Exclude<Emotion, 'neutral'>
-  state: TakeState
-  /** Bumped each time the take is made again by hand. */
-  rev: number
-  /** Lines are cloned from the take moved by this many semitones, then moved back. Below 0 for a take too high to clone. */
-  semitones: number
-}
-
-export interface Character {
-  id: number
-  book_id: number
-  name: string
-  role: Role
-  gender: Gender
-  age: Age
-  pitch: Pitch
-  description: string
-  voice_state: VoiceState
-  /** Bumped whenever the 15 second sample changes; use it to bust the audio cache. */
-  voice_rev: number
-  error: string | null
-  /** A candidate voice sample being auditioned. The current voice stays in use until the candidate is approved. */
-  draft_state: DraftState
-  draft_rev: number
-  /** Current candidate step or failure reason, and the server time when it last changed (Unix seconds). */
-  draft_status: string | null
-  draft_updated_at: number | null
-  /** How the character looks, in words. The portrait is drawn from it, and drawn again whenever it changes. */
-  appearance: string
-  portrait_state: DrawState
-  portrait_rev: number
-  portrait_error: string | null
-  line_count: number
-  /** One for each emotion other than neutral, in the order of EMOTIONS. Neutral is the voice itself. */
-  takes: Take[]
-}
-
-export type ReusableVoice = Pick<Character, 'id' | 'book_id' | 'name' | 'gender' | 'age' | 'pitch' | 'description' | 'voice_rev'> & {
-  book_title: string
-  book_author: string
-  language: string
-}
-
-/** A paragraph where the picture changes: a new one is shown, or with kind 'clear' the last one is taken down. */
-export interface Moment {
-  id: number
-  block_id: number
-  /** `Block.idx` of the paragraph. */
-  block_idx: number
-  kind: 'picture' | 'clear'
-  /** A few words to put under the picture. Empty for a clear, and for a moment found before titles existed. */
-  title: string
-  /** One sentence on what happens. */
-  summary: string
-  /** What the picture is drawn from. Empty for a clear. */
-  scene: string
-  /** 1 to 10. Of the moments on a page the highest count first. */
-  importance: number
-  /** The characters in the picture, most important first. */
-  character_ids: number[]
-  image_state: DrawState
-  image_rev: number
-  error: string | null
-  /** The reader asked for this picture by hand. It is drawn wherever it is and takes none of its page's places. */
-  starred: boolean
-}
-
-export interface Segment {
-  id: number
-  block_id: number
-  seq: number
-  /** Raw text. A block's segments concatenate to exactly the block's text. */
-  text: string
-  kind: 'narration' | 'speech'
-  /** null while a spoken line is still waiting for the tagger. */
-  character_id: number | null
-  /** How a spoken line is said. Narration is always neutral. */
-  emotion: Emotion
-  audio_state: AudioState
-  audio_rev: number
-  /** 1 once the clip on disk is at the level all clips share; leveling an old clip changes its file, not its rev. */
-  leveled: number
-  duration: number | null
-  error: string | null
-}
-
-export interface Block {
-  id: number
-  /** Position in the whole book, zero based. */
-  idx: number
-  chapter: number
-  tag: 'p' | 'h'
-  tag_state: TagState
-  segments: Segment[]
-}
-
-export interface Chapter {
-  index: number
-  title: string
-  first_block: number
-  block_count: number
-}
-
-export interface BookSummary {
-  id: number
-  title: string
-  author: string
-  block_count: number
-  position_block: number
-  /** With `position_block`, the line at the top of the page last read: `Segment.seq` in that block. */
-  position_seq: number
-  /** Two-letter code detected from the text: 'en' or 'es'. It picks the speech model and the sample voices' language. */
-  language: string
-}
-
-export interface BookDetail extends BookSummary {
-  /** Delivery options supported by this book's language and the selected narrator. */
-  emotions: Emotion[]
-  chapters: Chapter[]
-  characters: Character[]
 }
 
 export interface Settings {
@@ -153,7 +25,7 @@ export interface Settings {
   image_url: string
   /** The reader's switch. Moments are only looked for and drawn while it is on and `image_url` is set. */
   illustrations: boolean
-  /** How many pictures of one page count, 1 to 4. Starred pictures come on top. */
+  /** How many pictures of one page count, 1 to MAX_PICTURES_PER_PAGE. Starred pictures come on top. */
   pictures_per_page: number
 }
 

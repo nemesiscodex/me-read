@@ -167,20 +167,9 @@ def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers
     store = Store(home)
     hub = Hub()
     engine = engine or speech.Engine(Path(home) / 'models/hub', tts_provider=tts_provider, tts_url=tts_url, tts_consent=tts_consent)
-    identity = getattr(engine, 'generation_identity', speech.PROVIDERS[tts_provider or speech.DEFAULT_PROVIDER].identity)
-    changed = store.reconcile_generation(identity, speech.PROVIDERS[speech.DEFAULT_PROVIDER].identity)
-    remote = getattr(engine, 'remote', None)
-    service = f'the speech service at {remote.host}' if remote else None
-    narrators = {}
-    for language in speech.LANGUAGES:
-        narrators.setdefault(engine.provider_for(language).name, []).append(language)
-    for name, languages in narrators.items():
-        selected = speech.PROVIDERS[name]
-        logging.getLogger('meread').info(
-            'Narrator %s on %s, languages %s; voice design, emotion takes and speaker comparison on %s%s', selected.name,
-            service if service and selected.service else f"this Mac with {', '.join(selected.models)}",
-            ', '.join(selected.languages or ('any language the model accepts',)) if len(narrators) == 1 else ', '.join(languages),
-            service or 'this Mac', '; cached narration invalidated' if changed else '')
+    changed = store.reconcile_generation(engine.generation_identity, speech.NARRATORS[speech.LEGACY_NARRATOR].identity)
+    for line in engine.describe():
+        logging.getLogger('meread').info('%s%s', line, '; cached narration invalidated' if changed else '')
     pipeline = Pipeline(store, engine, publish=hub.publish, **({'ask': ask} if ask else {}), **({'draw': draw} if draw else {}))
 
     @asynccontextmanager
@@ -204,7 +193,8 @@ def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers
         return found(store.character(character_id), 'character')
 
     def segment_book(segment_id):
-        return found(store.one('SELECT book_id FROM segment WHERE id = ?', (segment_id,)), 'segment')['book_id']
+        segment = found(store.segment(segment_id), 'segment')
+        return store.block(segment['block_id'])['book_id']
 
     def retag(book_id, block_ids):
         hub.publish(book_id, {'type': 'blocks', 'blocks': [{'id': i, 'tag_state': 'pending'} for i in block_ids]})
@@ -223,11 +213,11 @@ def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers
         if moments:
             hub.publish(book_id, {'type': 'moments', 'moments': moments})
 
-    def picture_of(moment_id):
-        moment = found(store.one('SELECT id, book_id, kind FROM moment WHERE id = ?', (moment_id,)), 'moment')
+    def picture_book(moment_id):
+        moment = found(store.moment(moment_id), 'moment')
         if moment['kind'] != 'picture':
             raise HTTPException(404, 'this moment has no picture')
-        return moment
+        return store.block(moment['block_id'])['book_id']
 
     PNG = {'media_type': 'image/png', 'headers': {'Cache-Control': 'private, max-age=31536000, immutable'}}
 
@@ -248,17 +238,13 @@ def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers
                 parsed = epub.read(tmp.name)
             except epub.EpubError as e:
                 raise HTTPException(400, str(e))
-        book = store.book(store.add_book(parsed))
-        return {k: book[k] for k in ('id', 'title', 'author', 'block_count', 'position_block', 'position_seq', 'language')}
+        return store.summary(store.add_book(parsed))
 
     @app.delete('/api/books/{book_id}', status_code=204)
     def delete_book(book_id: int):
         found(store.book(book_id), 'book')
         pipeline.forget(book_id)
-        with store.lock:
-            store.run('DELETE FROM segment WHERE book_id = ?', (book_id,))
-            store.run('DELETE FROM book WHERE id = ?', (book_id,))
-        shutil.rmtree(store.book_dir(book_id), ignore_errors=True)
+        store.delete_book(book_id)
 
     @app.get('/api/books/{book_id}')
     def get_book(book_id: int):
@@ -275,18 +261,15 @@ def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers
 
     @app.get('/api/moments/{moment_id}/image')
     def moment_image(moment_id: int):
-        moment = picture_of(moment_id)
-        path = store.moment_path(moment['book_id'], moment_id)
+        path = store.moment_path(picture_book(moment_id), moment_id)
         if store.moment(moment_id)['image_state'] != 'ready' or not path.exists():
             raise HTTPException(404, 'this moment is not drawn yet')
         return FileResponse(path, **PNG)
 
     @app.post('/api/moments/{moment_id}/redraw')
     def redraw_moment(moment_id: int):
-        book_id = picture_of(moment_id)['book_id']
-        # Asking for a picture by hand also asks for one the page cap or a quick page turn left undrawn.
-        store.run('UPDATE moment SET wanted = 1 WHERE id = ?', (moment_id,))
-        store.redraw_moments('m.id = ?', (moment_id,))
+        book_id = picture_book(moment_id)
+        store.redraw_moment(moment_id)
         announce_moments(book_id, 'm.id = ?', (moment_id,))
         pipeline.nudge()
         return store.moment(moment_id)
@@ -336,12 +319,12 @@ def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers
 
     @app.post('/api/blocks/{block_id}/retag', status_code=204)
     def retag_block(block_id: int):
-        block = found(store.one('SELECT book_id FROM block WHERE id = ?', (block_id,)), 'paragraph')
+        block = found(store.block(block_id), 'paragraph')
         retag(block['book_id'], store.retag_blocks('id = ?', (block_id,)))
 
     @app.post('/api/blocks/{block_id}/writer')
     def set_writer(block_id: int, body: Writer):
-        block = found(store.one('SELECT book_id FROM block WHERE id = ?', (block_id,)), 'paragraph')
+        block = found(store.block(block_id), 'paragraph')
         character = character_of(body.character_id)
         if character['book_id'] != block['book_id']:
             raise HTTPException(422, 'that character belongs to another book')
@@ -364,7 +347,7 @@ def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers
 
     @app.post('/api/blocks/{block_id}/star')
     def star_block(block_id: int):
-        block = found(store.one('SELECT id, book_id, idx FROM block WHERE id = ?', (block_id,)), 'paragraph')
+        block = found(store.block(block_id), 'paragraph')
         if not illustrating(store.settings()):
             raise HTTPException(409, 'illustrations are off, so nothing would be drawn')
         try:
@@ -470,13 +453,7 @@ def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers
                 audio, rate = speech.read_sample(tmp.name)
             except ValueError as e:
                 raise HTTPException(400, str(e))
-        import soundfile as sf
-        path = store.voice_path(character)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with store.lock:
-            store.reset_voice(character_id)
-            sf.write(path, audio, rate, format='WAV')
-            store.run("UPDATE character SET voice_state = 'ready' WHERE id = ?", (character_id,))
+        store.replace_voice(character_id, speech.wav_of(audio, rate))
         announce(character['book_id'], 'character_id = ?', (character_id,))
         return store.character(character_id)
 
@@ -540,11 +517,6 @@ def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers
         if into['book_id'] != character['book_id'] or into['id'] == character_id:
             raise HTTPException(422, 'pick another character of the same book')
         store.merge_character(character_id, body.into)
-        store.voice_path(character).unlink(missing_ok=True)
-        store.draft_path(character).unlink(missing_ok=True)
-        store.portrait_path(character).unlink(missing_ok=True)
-        for emotion in DIRECTIONS:
-            store.take_path(character, emotion).unlink(missing_ok=True)
         announce(character['book_id'], 'character_id = ?', (body.into,))
         announce_moments(character['book_id'], FEATURING, (body.into,))
 
@@ -556,8 +528,8 @@ def create_app(home, engine=None, ask=None, draw=None, web_dir=None, run_workers
             character = character_of(body.voice)
             if character['voice_state'] != 'ready' or not store.voice_path(character).is_file():
                 raise HTTPException(409, f"{character['name']}'s voice is not ready; choose one listed by /api/voices")
-            language = store.one('SELECT language FROM book WHERE id = ?', (character['book_id'],))['language']
-            clips = store.request_clips(character, language, engine.provider_for(language).identity, body.texts)
+            language = store.language(character['book_id'])
+            clips = store.request_clips(character, language, engine.identity(language), body.texts)
         pipeline.nudge()
         return clips
 

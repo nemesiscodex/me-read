@@ -13,10 +13,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from numbers import Real
 from pathlib import Path
-from typing import Callable, NamedTuple
+from typing import Callable, ClassVar, NamedTuple
 
 import numpy as np
 import soundfile as sf
@@ -28,6 +28,7 @@ TOKENIZER = 'mlx-community/S3TokenizerV2'
 DESIGNER = 'mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit'
 MULTILINGUAL = 'mlx-community/chatterbox-8bit'
 BREEZE = 'mlx-community/Breeze-TTS-2-mlx-4bit'
+FISH = 'mlx-community/fish-audio-s2-pro-8bit'
 MING = 'mlx-community/Ming-3.0-tts-0.5B-8bit'
 AUDIO8 = 'Edge0/Audio8-TTS-Realistic-Air'
 QWEN_BASE = 'mlx-community/Qwen3-TTS-12Hz-0.6B-Base-8bit'
@@ -35,8 +36,12 @@ QWEN_BASE_ORIGINAL = 'Qwen/Qwen3-TTS-12Hz-0.6B-Base'
 MODEL_REVISIONS = {MING: 'd0d1da6f627e4b3f20cc2db6ba4aee86d45343ad', AUDIO8: '23c305cc013fde378edb459f538317043c993a74',
                    QWEN_BASE: '50f45ef0047cde7e84c2ef04326acb8ada2436a7',
                    QWEN_BASE_ORIGINAL: '5d83992436eae1d760afd27aff78a71d676296fc'}
-DEFAULT_PROVIDER = 'chatterbox'
 LANGUAGES = ('en', 'es')
+# The narrator of each language when none is chosen, on this Mac alone and with the GPU speech service.
+DEFAULT_NARRATORS = {'en': 'chatterbox', 'es': 'chatterbox'}
+SERVICE_DEFAULT_NARRATORS = {'en': 'chatterbox', 'es': 'audio8'}
+# The narrator of a library from before the narrator was recorded.
+LEGACY_NARRATOR = 'chatterbox'
 TRANSCRIBER = 'mlx-community/whisper-large-v3-turbo-asr-fp16'
 TRANSCRIBER_REVISION = '624c19c9af5603fa73b83bce14d4aeea96156d18'
 TRANSCRIPTION_POLICY = 'whisper-auto-language-16khz-v1'
@@ -47,69 +52,190 @@ TAKE_CFG_SCALE = 1.0
 
 
 @dataclass(frozen=True)
-class Provider:
+class Narrator:
+    """A model that speaks every line of a book in a character's saved voice. Each kind below knows how its model takes
+    that voice; the fields are what me-read promises about one narrator."""
     name: str
+    # What it narrates with. Part of its identity, which decides when stored clips are made again.
     models: tuple[str, ...]
-    languages: tuple[str, ...] | None
-    reference: str
-    # The model the GPU speech service narrates with, or None when only MLX on this Mac narrates.
-    service: str | None = None
+    # The languages it reads, or None for any language its model accepts.
+    languages: tuple[str, ...] | None = None
+    # The books whose lines it reads from Breeze emotion takes. It reads other books in each character's own voice.
+    emotion_languages: tuple[str, ...] = ('en',)
     retakes: int = 1
     # Seconds of silence after the saved sample, for a model that otherwise continues the sample's last word into the clip.
     reference_silence: float = 0
     # End each clip with the model's own fade-out and a little silence, for a model that stops on the last word.
     soft_end: bool = False
+    # Whether it narrates on the GPU speech service when one is connected, and whether it cannot narrate without one.
+    on_service: ClassVar[bool] = False
+    needs_service: ClassVar[bool] = False
+    # Whether it needs the words spoken in the saved voice, which Whisper transcribes on this Mac.
+    transcribes: ClassVar[bool] = True
+
+    def line(self, engine, text, wav, seed, language):
+        """`text` in the voice of the WAV bytes as the model made it, (audio, rate), with the engine's models and caches."""
+        raise NotImplementedError
+
+    def reads(self, language):
+        return self.languages is None or language in self.languages
 
     def emotions(self, language):
-        if language == 'en' or (language == 'es' and self.name in ('ming', 'chatterbox', 'audio8')):
-            return EMOTIONS
-        return ('neutral',)
+        return EMOTIONS if language in self.emotion_languages else ('neutral',)
 
     @property
     def identity(self):
         models = [{'id': model, **({'revision': MODEL_REVISIONS[model]} if model in MODEL_REVISIONS else {})}
                   for model in (*self.models, DESIGNER)]
-        if self.reference != 'conditionals':
+        if self.transcribes:
             models.append({'id': TRANSCRIBER, 'revision': TRANSCRIBER_REVISION})
         return {'provider': self.name, 'models': models, 'policy': 1,
-                **({'transcription_policy': TRANSCRIPTION_POLICY} if self.reference != 'conditionals' else {}),
-                **({'spoken_disclaimer': False} if self.reference == 'remote' else {}),
+                **({'transcription_policy': TRANSCRIPTION_POLICY} if self.transcribes else {}),
+                **({'spoken_disclaimer': False} if self.needs_service else {}),
                 **({'reference_silence': self.reference_silence} if self.reference_silence else {}),
                 **({'soft_end': True} if self.soft_end else {})}
 
     def validate_language(self, language):
-        if self.languages is None or language in self.languages:
+        if self.reads(language):
             return
         name = self.name.capitalize()
         if self.languages != ('en',):
             raise ValueError(f'{name} narrates {" and ".join(self.languages)} only, and this book is in {language}.')
         if language == 'es':
-            raise ValueError(f'{name} narrates English only. For Spanish, restart with --tts-provider ming, --tts-provider chatterbox '
-                             'or --tts-provider fish.')
+            others = listed([f'--tts-provider {narrator.name}' for narrator in NARRATORS.values() if narrator.reads('es')],
+                            'or')
+            raise ValueError(f'{name} narrates English only. For Spanish, restart with {others}.')
         raise ValueError(f'{name} narrates English only, and this book is in {language}.')
 
+    @property
+    def about(self):
+        """What it reads and where, for --help."""
+        if self.languages is None:
+            reads = 'reads any language its model accepts'
+        elif len(self.languages) == 1:
+            reads = f'reads {language_name(self.languages[0])} only'
+        else:
+            reads = 'reads ' + listed([language_name(language) for language in self.languages])
+        if self.needs_service:
+            return f'{self.name} {reads} and runs only on the GPU speech service at --tts-url'
+        if self.on_service:
+            return f'{self.name} {reads} and runs on this Mac, or on the GPU speech service with --tts-url'
+        return f'{self.name} {reads} and runs on this Mac'
 
-PROVIDERS = {
-    'ming': Provider('ming', (MING,), None, 'path', retakes=3, reference_silence=1.0),
-    'chatterbox': Provider('chatterbox', (CHATTERBOX, MULTILINGUAL, TOKENIZER), None, 'conditionals', 'chatterbox', 3),
-    'fish': Provider('fish', ('mlx-community/fish-audio-s2-pro-8bit',), None, 'waveform'),
-    'breeze': Provider('breeze', (BREEZE,), ('en',), 'path'),
-    'breeze-gguf': Provider('breeze-gguf', ('cstr/breeze-tts-2-GGUF@q4_k',), ('en',), 'remote', 'breeze'),
-    'audio8': Provider('audio8', (AUDIO8,), ('en', 'es'), 'remote', 'audio8', retakes=3, soft_end=True),
-    'qwen-base': Provider('qwen-base', (QWEN_BASE,), None, 'path', retakes=3, reference_silence=1.0,
-                          soft_end=True),
-    'qwen-base-gpu': Provider('qwen-base-gpu', (QWEN_BASE_ORIGINAL,), ('en', 'es'), 'remote', 'qwen-base', retakes=3,
-                              reference_silence=1.0, soft_end=True),
-}
+
+@dataclass(frozen=True)
+class Chatterbox(Narrator):
+    """Clones the saved voice from conditionals prepared from its WAV, with no transcript: on the GPU speech service when
+    one is connected, else on this Mac with the turbo model for English and the multilingual one for other languages."""
+    on_service = True
+    transcribes = False
+
+    def line(self, engine, text, wav, seed, language):
+        if engine.remote is not None:
+            return engine._cloned('chatterbox', wav, text, seed, language=language)
+        import mlx.core as mx
+        model = engine._chatterbox(language)
+        if language == 'en':
+            def prepare(path):
+                model.prepare_conditionals(str(path), exaggeration=0, norm_loudness=True)
+                return model._conds
+            model._conds = engine._voice('turbo', wav, prepare)
+            options = {'temperature': 0.8, 'top_p': 0.95, 'top_k': 1000, 'repetition_penalty': 1.2}
+        else:
+            conds = engine._voice('multilingual', wav, lambda path: model.prepare_conditionals(str(path), 24000))
+            options = {'conds': conds, 'lang_code': language}
+        mx.random.seed(seed)
+        return joined(model.generate(text=text, **options), model.sample_rate)
+
+
+@dataclass(frozen=True)
+class Fish(Narrator):
+    """Clones the saved voice from its waveform and transcript, with MLX on this Mac."""
+
+    def line(self, engine, text, wav, seed, language):
+        import mlx.core as mx
+        from mlx_audio.utils import load_audio
+
+        def prepare(path):
+            said = engine._transcript(wav)
+            return said, load_audio(str(path), sample_rate=engine._model(self.models[0]).sample_rate)
+        said, waveform = engine._voice(self.name, wav, prepare)
+        model = engine._model(self.models[0])
+        mx.random.seed(seed)
+        return joined(model.generate(text=text, ref_audio=waveform, ref_text=said, stream=False), model.sample_rate)
+
+
+@dataclass(frozen=True)
+class MacClone(Narrator):
+    """Clones the saved WAV, followed by `reference_silence`, and its transcript, with MLX on this Mac. `options` are the
+    model's arguments for a book's language."""
+    options: Callable[[str], dict] = lambda language: {}
+
+    def line(self, engine, text, wav, seed, language):
+        import mlx.core as mx
+        said = engine._transcript(wav)
+        model = engine._model(self.models[0])
+        mx.random.seed(seed)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'reference.wav'
+            path.write_bytes(with_silence(wav, self.reference_silence))
+            return joined(model.generate(text=text, ref_audio=str(path), ref_text=said, seed=seed, stream=False,
+                                         **self.options(language)), model.sample_rate)
+
+
+@dataclass(frozen=True)
+class ServiceClone(Narrator):
+    """Clones the saved WAV, followed by `reference_silence`, and its transcript, with the GPU speech service's
+    `service_model`. `options` are the request's fields for a book's language."""
+    service_model: str = field(kw_only=True)
+    options: Callable[[str], dict] = lambda language: {}
+    on_service = True
+    needs_service = True
+
+    def line(self, engine, text, wav, seed, language):
+        return engine._cloned(self.service_model, with_silence(wav, self.reference_silence), text, seed,
+                              ref_text=engine._transcript(wav), **self.options(language))
+
+
+NARRATORS = {narrator.name: narrator for narrator in (
+    MacClone('ming', (MING,), emotion_languages=('en', 'es'), retakes=3, reference_silence=1.0,
+             options=lambda language: {'lang_code': language}),
+    Chatterbox('chatterbox', (CHATTERBOX, MULTILINGUAL, TOKENIZER), emotion_languages=('en', 'es'), retakes=3),
+    Fish('fish', (FISH,)),
+    MacClone('breeze', (BREEZE,), ('en',)),
+    ServiceClone('breeze-gguf', ('cstr/breeze-tts-2-GGUF@q4_k',), ('en',), service_model='breeze'),
+    ServiceClone('audio8', (AUDIO8,), ('en', 'es'), emotion_languages=('en', 'es'), retakes=3, soft_end=True,
+                 service_model='audio8', options=lambda language: {'language': language}),
+    MacClone('qwen-base', (QWEN_BASE,), retakes=3, reference_silence=1.0, soft_end=True,
+             options=lambda language: {'language': language_name(language) if language in SAMPLE_TEXT else 'auto'}),
+    ServiceClone('qwen-base-gpu', (QWEN_BASE_ORIGINAL,), ('en', 'es'), retakes=3, reference_silence=1.0, soft_end=True,
+                 service_model='qwen-base', options=lambda language: {'language': language}),
+)}
 
 
 def narrators(choice, service):
-    """The provider that narrates each language. A chosen provider narrates them all. By default English uses
-    Chatterbox and Spanish uses Audio8, which only the GPU speech service can run, so without one Spanish stays
-    on Chatterbox."""
-    if choice:
-        return {language: PROVIDERS[choice] for language in LANGUAGES}
-    return {'en': PROVIDERS[DEFAULT_PROVIDER], 'es': PROVIDERS['audio8' if service else DEFAULT_PROVIDER]}
+    """The narrator of each language. A chosen narrator reads them all; otherwise each language has its default."""
+    defaults = SERVICE_DEFAULT_NARRATORS if service else DEFAULT_NARRATORS
+    return {language: NARRATORS[choice or defaults[language]] for language in LANGUAGES}
+
+
+def default_narrators():
+    """Which narrator reads each language when none is chosen, for --help."""
+    said = []
+    for language in LANGUAGES:
+        here, served = DEFAULT_NARRATORS[language], SERVICE_DEFAULT_NARRATORS[language]
+        said.append(f'{here} for {language_name(language)}' if here == served else
+                    f'{served} for {language_name(language)} with --tts-url, otherwise {here}')
+    return ', and '.join(said)
+
+
+def listed(items, last='and'):
+    *rest, final = items
+    return f'{", ".join(rest)} {last} {final}' if rest else final
+
+
+def language_name(language):
+    return SAMPLE_TEXT[language][0] if language in SAMPLE_TEXT else language
 
 
 class Raw(NamedTuple):
@@ -118,14 +244,8 @@ class Raw(NamedTuple):
     design: Callable  # (instruction, seed, language) -> (audio, rate)
     take: Callable  # (voice wav bytes, its transcript, instruction, script, seed) -> (audio, rate)
     speaker: Callable  # (audio, rate, language) -> unit vector
-    line: Callable  # (text, voice path, seed, language) -> (audio, rate)
+    line: Callable  # (text, voice wav bytes, seed, language) -> (audio, rate)
 
-
-@dataclass(frozen=True)
-class Reference:
-    wav: bytes
-    text: str
-    waveform: object = None
 
 # What the voice designer reads for the 15 second sample, so the sample is in the language it will be cloned for.
 SAMPLE_TEXT = {
@@ -330,7 +450,8 @@ class Remote:
 
     def __init__(self, url, consent):
         if not url:
-            raise ValueError('--tts-url is required with --tts-provider audio8, qwen-base-gpu or breeze-gguf and with --tts-consent, '
+            served = listed([narrator.name for narrator in NARRATORS.values() if narrator.needs_service], 'or')
+            raise ValueError(f'--tts-url is required with --tts-provider {served} and with --tts-consent, '
                              'for example http://127.0.0.1:8781')
         if not consent or not consent.strip():
             raise ValueError('--tts-consent is required with --tts-url. Write your own statement about the reference '
@@ -429,10 +550,10 @@ class Remote:
                               'address is right, and that this machine can reach it.') from None
 
 
-def connect(provider, url, consent):
-    """The GPU speech service when an address or consent was given, which audio8, qwen-base-gpu and breeze-gguf cannot narrate
-    without, else None. Raises ValueError when the settings are missing or unusable."""
-    if url is None and consent is None and (provider is None or PROVIDERS[provider].reference != 'remote'):
+def connect(narrator, url, consent):
+    """The GPU speech service when an address or consent was given, or the narrator cannot narrate without it, else
+    None. Raises ValueError when the settings are missing or unusable."""
+    if url is None and consent is None and (narrator is None or not NARRATORS[narrator].needs_service):
         return None
     return Remote(url, consent)
 
@@ -474,6 +595,26 @@ def mono(samples, rate):
     return samples.astype('float32'), int(rate)
 
 
+def joined(results, rate):
+    """An MLX model's results as one mono float32 clip and the rate they report, `rate` when they report none. Raises
+    RuntimeError when the output cannot be used."""
+    import mlx.core as mx
+    parts, actual_rate = [], None
+    try:
+        for result in results:
+            mx.eval(result.audio)
+            samples, reported = mono(np.asarray(result.audio), getattr(result, 'sample_rate', rate))
+            if actual_rate is not None and reported != actual_rate:
+                raise RuntimeError('the speech model returned inconsistent sample rates')
+            actual_rate = reported
+            parts.append(samples)
+        if not parts:
+            raise RuntimeError('the speech model returned no audio')
+        return np.concatenate(parts), actual_rate
+    finally:
+        mx.clear_cache()
+
+
 def decode_wav(data):
     try:
         audio, rate = sf.read(io.BytesIO(data), dtype='float32', always_2d=True)
@@ -497,8 +638,8 @@ def with_silence(wav, seconds):
 
 
 class Engine:
-    """The selected narrator, Breeze to design English voices and direct takes, the Qwen3 voice designer for other
-    languages, and Chatterbox to tell voices apart. One worker owns all model calls."""
+    """The narrator of each language, Breeze to design English voices and direct takes, the Qwen3 voice designer for
+    other languages, and Chatterbox to tell voices apart. One worker owns all model calls."""
 
     def __init__(self, models_dir, tts_provider=None, tts_url=None, tts_consent=None):
         self.remote = connect(tts_provider, tts_url, tts_consent)
@@ -508,7 +649,9 @@ class Engine:
         os.environ['HF_HUB_CACHE'] = str(self.hub)
         os.environ.setdefault('TQDM_DISABLE', '1')
         os.environ.setdefault('TRANSFORMERS_VERBOSITY', 'error')
-        self.chatterbox = self.multilingual = self.designer = self.narrator = self.breeze = None
+        # Each MLX speech model by repo, loaded once for every job that uses it: Breeze designs, directs takes and may
+        # narrate, and Chatterbox compares speakers and may narrate.
+        self.loaded = {}
         self.voices, self.speakers, self.transcripts, self.uploads, self.moved = {}, {}, {}, {}, {}
         gpu = self.remote is not None
         self.raw = Raw(design=self._gpu_design if gpu else self._mlx_design,
@@ -516,25 +659,46 @@ class Engine:
                        speaker=self._gpu_speaker if gpu else self._mlx_speaker,
                        line=self._line)
 
-    def provider_for(self, language):
-        """The narrator that reads books in `language`."""
+    def _narrator(self, language):
         return self.narrators.get(language) or self.narrators['en']
+
+    def emotions(self, language):
+        """The deliveries the lines of a book in `language` may have."""
+        return self._narrator(language).emotions(language)
+
+    def validate_language(self, language):
+        """Raises ValueError, saying what to restart with, when the narrator cannot read a book in `language`."""
+        self._narrator(language).validate_language(language)
+
+    def identity(self, language):
+        """The identity of the narrator of `language`, which decides when its clips are made again."""
+        return self._narrator(language).identity
 
     @property
     def generation_identity(self):
         """The narrator's identity, or each language's when they differ."""
-        identities = {language: provider.identity for language, provider in self.narrators.items()}
+        identities = {language: narrator.identity for language, narrator in self.narrators.items()}
         if all(identity == identities['en'] for identity in identities.values()):
             return identities['en']
         return {'narrators': identities}
 
-    def _line(self, text, voice_path, seed, language):
-        provider = self.provider_for(language)
-        if self.remote is not None and provider.service:
-            return self._gpu_line(text, voice_path, seed, language)
-        if provider.reference == 'conditionals':
-            return self._mlx_line(text, voice_path, seed, language)
-        return self._mlx_reference_line(text, voice_path, seed, language)
+    def describe(self):
+        """A line for each narrator: the languages it reads, and where it and the other speech work run."""
+        service = f'the speech service at {self.remote.host}' if self.remote else None
+        languages = {}
+        for language, narrator in self.narrators.items():
+            languages.setdefault(narrator, []).append(language)
+        lines = []
+        for narrator, read in languages.items():
+            where = service if service and narrator.on_service else 'this Mac with ' + ', '.join(narrator.models)
+            if len(languages) == 1:
+                read = narrator.languages or ('any language the model accepts',)
+            lines.append(f"Narrator {narrator.name} on {where}, languages {', '.join(read)}; "
+                         f"voice design, emotion takes and speaker comparison on {service or 'this Mac'}")
+        return lines
+
+    def _line(self, text, wav, seed, language):
+        return self._narrator(language).line(self, text, wav, seed, language)
 
     def _snapshot(self, repo, revision=None):
         from huggingface_hub import snapshot_download
@@ -545,33 +709,18 @@ class Engine:
         except Exception:
             return snapshot_download(repo, cache_dir=self.hub, **options)
 
-    def _generate(self, results, rate):
-        import mlx.core as mx
-        parts, actual_rate = [], None
-        try:
-            for result in results:
-                mx.eval(result.audio)
-                samples, reported = mono(np.asarray(result.audio), getattr(result, 'sample_rate', rate))
-                if actual_rate is not None and reported != actual_rate:
-                    raise RuntimeError('the speech model returned inconsistent sample rates')
-                actual_rate = reported
-                parts.append(samples)
-            if not parts:
-                raise RuntimeError('the speech model returned no audio')
-            return np.concatenate(parts), actual_rate
-        finally:
-            mx.clear_cache()
+    def _model(self, repo, *needs):
+        """The MLX speech model `repo`, downloaded after the repos it `needs` and loaded once."""
+        if repo not in self.loaded:
+            from mlx_audio.tts.utils import load_model
+            for need in needs:
+                self._snapshot(need)
+            self.loaded[repo] = load_model(self._snapshot(repo))
+        return self.loaded[repo]
 
-    def _breeze(self):
-        from mlx_audio.tts.utils import load_model
-        # The Breeze narrator designs and directs too; a second copy would only take memory.
-        if any(provider.models[0] == BREEZE for provider in self.narrators.values()):
-            if self.narrator is None:
-                self.narrator = load_model(self._snapshot(BREEZE))
-            return self.narrator
-        if self.breeze is None:
-            self.breeze = load_model(self._snapshot(BREEZE))
-        return self.breeze
+    def _chatterbox(self, language):
+        """Chatterbox for `language`, the turbo model for English and the multilingual one for the others."""
+        return self._model(CHATTERBOX if language == 'en' else MULTILINGUAL, TOKENIZER)
 
     def design(self, instruction, seed, language='en', others=(), ceiling=None, progress=lambda message: None):
         """A voice sample of about 15 seconds matching `instruction`, spoken in `language`, as (audio, rate). Breeze
@@ -598,14 +747,12 @@ class Engine:
         mx.random.seed(seed)
         spoken, text = SAMPLE_TEXT.get(language, SAMPLE_TEXT['en'])
         if language == 'en':
-            designer = self._breeze()
-            return self._generate(designer.generate(text=text, instruct=instruction, cfg_scale=CFG_SCALE, seed=seed,
-                                                    stream=False), designer.sample_rate)
-        from mlx_audio.tts.utils import load_model
-        if self.designer is None:
-            self.designer = load_model(self._snapshot(DESIGNER))
-        return self._generate(self.designer.generate_voice_design(text=text, instruct=instruction, language=spoken),
-                              self.designer.sample_rate)
+            designer = self._model(BREEZE)
+            return joined(designer.generate(text=text, instruct=instruction, cfg_scale=CFG_SCALE, seed=seed,
+                                            stream=False), designer.sample_rate)
+        designer = self._model(DESIGNER)
+        return joined(designer.generate_voice_design(text=text, instruct=instruction, language=spoken),
+                      designer.sample_rate)
 
     def _gpu_design(self, instruction, seed, language):
         said = language if language in SAMPLE_TEXT else 'en'
@@ -626,36 +773,23 @@ class Engine:
 
     def _mlx_take(self, wav, transcript, instruction, script, seed):
         import mlx.core as mx
-        director = self._breeze()
+        director = self._model(BREEZE)
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'reference.wav'
             path.write_bytes(wav)
             mx.random.seed(seed)
-            return self._generate(director.generate(text=script, instruct=instruction, ref_audio=str(path),
-                                                    ref_text=transcript, cfg_scale=TAKE_CFG_SCALE, seed=seed,
-                                                    stream=False),
-                                  director.sample_rate)
+            return joined(director.generate(text=script, instruct=instruction, ref_audio=str(path), ref_text=transcript,
+                                            cfg_scale=TAKE_CFG_SCALE, seed=seed, stream=False),
+                          director.sample_rate)
 
     def _gpu_take(self, wav, transcript, instruction, script, seed):
         return self._cloned('breeze', wav, script, seed, ref_text=transcript, instructions=instruction,
                             cfg_scale=TAKE_CFG_SCALE)
 
-    def _cloner(self, language):
-        from mlx_audio.tts.utils import load_model
-        if language == 'en':
-            if self.chatterbox is None:
-                self._snapshot(TOKENIZER)
-                self.chatterbox = load_model(self._snapshot(CHATTERBOX))
-            return self.chatterbox
-        if self.multilingual is None:
-            self._snapshot(TOKENIZER)
-            self.multilingual = load_model(self._snapshot(MULTILINGUAL))
-        return self.multilingual
-
     def _mlx_speaker(self, audio, rate, language):
         """Who the cloning model hears in the audio, as a unit vector."""
         from mlx_audio.utils import resample_audio
-        model = self._cloner(language)
+        model = self._chatterbox(language)
         heard = np.asarray(model.ve.embeds_from_wavs([resample_audio(audio, rate, 16000)], sample_rate=16000))
         heard = heard.mean(axis=0).flatten().astype('float64')
         return heard / np.linalg.norm(heard)
@@ -694,16 +828,14 @@ class Engine:
         cache[key] = value
         return value
 
-    def _voice(self, model, voice_path, prepare):
-        wav = Path(voice_path).read_bytes()
-        checksum = hashlib.sha256(wav).hexdigest()
-
+    def _voice(self, kind, wav, prepare):
+        """What `prepare` makes of a copy of the WAV bytes at a path, kept for the same kind of voice and bytes."""
         def condition():
             with tempfile.TemporaryDirectory() as tmp:
                 path = Path(tmp) / 'reference.wav'
                 path.write_bytes(wav)
                 return prepare(path)
-        return self._cached(self.voices, (model, checksum), condition)
+        return self._cached(self.voices, (kind, hashlib.sha256(wav).hexdigest()), condition)
 
     def _transcript(self, wav):
         """The words spoken in the WAV bytes, by Whisper on this Mac."""
@@ -732,73 +864,6 @@ class Engine:
                 mx.clear_cache()
         key = (hashlib.sha256(wav).hexdigest(), TRANSCRIBER, TRANSCRIBER_REVISION, TRANSCRIPTION_POLICY)
         return self._cached(self.transcripts, key, transcribe)
-
-    def _reference(self, voice_path, provider):
-        from mlx_audio.tts.utils import load_model
-        from mlx_audio.utils import load_audio
-
-        wav = Path(voice_path).read_bytes()
-
-        def prepare():
-            text = self._transcript(wav)
-            if self.narrator is None:
-                self.narrator = load_model(self._snapshot(provider.models[0]))
-            if provider.reference != 'waveform':
-                return Reference(wav, text)
-            with tempfile.TemporaryDirectory() as tmp:
-                path = Path(tmp) / 'reference.wav'
-                path.write_bytes(wav)
-                return Reference(wav, text, load_audio(str(path), sample_rate=self.narrator.sample_rate))
-        return self._cached(self.voices, (provider.name, provider.models, hashlib.sha256(wav).hexdigest()), prepare)
-
-    def _mlx_reference_line(self, text, voice_path, seed, language):
-        import mlx.core as mx
-        provider = self.provider_for(language)
-        reference = self._reference(voice_path, provider)
-        model = self.narrator
-        mx.random.seed(seed)
-        if provider.reference == 'waveform':
-            return self._generate(model.generate(text=text, ref_audio=reference.waveform, ref_text=reference.text,
-                                                 stream=False), model.sample_rate)
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / 'reference.wav'
-            path.write_bytes(with_silence(reference.wav, provider.reference_silence))
-            options = {'ming': {'lang_code': language},
-                       'qwen-base': {'language': SAMPLE_TEXT[language][0] if language in SAMPLE_TEXT else 'auto'}
-                       }.get(provider.name, {})
-            return self._generate(model.generate(text=text, ref_audio=str(path), ref_text=reference.text, seed=seed,
-                                                 stream=False, **options), model.sample_rate)
-
-    def _english(self, voice_path):
-        model = self._cloner('en')
-
-        def prepare(path):
-            model.prepare_conditionals(str(path), exaggeration=0, norm_loudness=True)
-            return model._conds
-        model._conds = self._voice('turbo', voice_path, prepare)
-        return model, lambda text: model.generate(text=text, temperature=0.8, top_p=0.95, top_k=1000, repetition_penalty=1.2)
-
-    def _other(self, voice_path, language):
-        model = self._cloner(language)
-        conds = self._voice('multilingual', voice_path, lambda path: model.prepare_conditionals(str(path), 24000))
-        return model, lambda text: model.generate(text=text, conds=conds, lang_code=language)
-
-    def _mlx_line(self, text, voice_path, seed, language):
-        import mlx.core as mx
-        model, generate = self._english(voice_path) if language == 'en' else self._other(voice_path, language)
-        mx.random.seed(seed)
-        return self._generate(generate(text), model.sample_rate)
-
-    def _gpu_line(self, text, voice_path, seed, language):
-        provider = self.provider_for(language)
-        wav = Path(voice_path).read_bytes()
-        service = provider.service
-        if service == 'chatterbox':
-            return self._cloned('chatterbox', wav, text, seed, language=language)
-        if service in ('audio8', 'qwen-base'):
-            padded = with_silence(wav, provider.reference_silence)
-            return self._cloned(service, padded, text, seed, language=language, ref_text=self._transcript(wav))
-        return self._cloned('breeze', wav, text, seed, ref_text=self._transcript(wav))
 
     def _cloned(self, model, wav, text, seed, **fields):
         """`text` from the service's `model` in the voice of the WAV bytes, uploading the voice first when needed."""
@@ -838,18 +903,14 @@ class Engine:
         With `semitones`, the model clones the sample shifted by that many and each clip is shifted back. A model that
         clones a very high take speaks it in two voices at once; cloning it lower and raising the clip avoids that.
         """
-        provider = self.provider_for(language)
-        provider.validate_language(language)
+        narrator = self._narrator(language)
+        narrator.validate_language(language)
         words = len(text.split())
-        with tempfile.TemporaryDirectory() as tmp:
-            reference = voice_path
-            if semitones:
-                reference = Path(tmp) / 'reference.wav'
-                reference.write_bytes(self._moved(voice_path, semitones))
-            # A short line sometimes rambles on past its text; a clip far longer than its words is retaken.
-            for attempt in range(provider.retakes):
-                audio, rate = self.raw.line(text, reference, seed + attempt, language)
-                audio = (soft_end if provider.soft_end else trim)(shifted(audio, -semitones), rate)
-                if len(audio) / rate <= 2.5 + words * 0.9:
-                    break
+        wav = self._moved(voice_path, semitones) if semitones else Path(voice_path).read_bytes()
+        # A short line sometimes rambles on past its text; a clip far longer than its words is retaken.
+        for attempt in range(narrator.retakes):
+            audio, rate = self.raw.line(text, wav, seed + attempt, language)
+            audio = (soft_end if narrator.soft_end else trim)(shifted(audio, -semitones), rate)
+            if len(audio) / rate <= 2.5 + words * 0.9:
+                break
         return leveled(audio, rate), rate

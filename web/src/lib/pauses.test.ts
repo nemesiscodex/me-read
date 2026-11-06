@@ -17,7 +17,7 @@ const seg = (text: string, character_id: number | null = 1): Segment => ({
   duration: 1,
   error: null,
 })
-const block = (tag: 'p' | 'h', segments: Segment[]): Block => ({ id: nextId++, idx: 0, chapter: 0, tag, tag_state: 'tagged', segments })
+const block = (tag: 'p' | 'h', segments: Segment[]): Block => ({ id: nextId++, idx: 0, chapter: 0, tag, tag_state: 'tagged', writer_id: null, segments })
 
 describe('pausesAfter', () => {
   it('rests longest after a heading, then after a paragraph', () => {

@@ -23,13 +23,14 @@ def recording(path, level=0.1, seconds=7, rate=24000, stereo=False):
 
 @pytest.fixture
 def models(monkeypatch):
+    import huggingface_hub
     import mlx_audio.stt
     import mlx_audio.tts.utils
 
     state = SimpleNamespace(loads=[], snapshots=[], transcribed=[], spoken=[], prepared=[], conditioned=[], error=None,
-                            transcript=None, during_transcribe=None, result_rate=None)
+                            transcript=None, during_transcribe=None, result_rate=None, hear=None, output=None)
 
-    def snapshot(self, repo, revision=None):
+    def snapshot(repo, cache_dir, local_files_only=False, revision=None):
         state.snapshots.append((repo, revision))
         return repo
 
@@ -56,6 +57,9 @@ def models(monkeypatch):
         def generate(self, *, text, ref_audio, ref_text, stream):
             assert isinstance(ref_audio, mx.array)
             state.spoken.append({'text': text, 'audio': np.asarray(ref_audio), 'ref_text': ref_text, 'stream': stream})
+            if state.output is not None:
+                yield from state.output
+                return
             yield result(self.sample_rate)
 
     class Breeze:
@@ -84,9 +88,12 @@ def models(monkeypatch):
                                  'seed': seed, 'stream': stream, 'language': language})
             yield result(self.sample_rate)
 
+    def hear(wavs, sample_rate):
+        return state.hear(wavs, sample_rate) if state.hear else np.array([[1., 0., 0.]])
+
     class Chatterbox:
         sample_rate = 24000
-        ve = SimpleNamespace(embeds_from_wavs=lambda *args, **kwargs: np.array([[1., 0., 0.]]))
+        ve = SimpleNamespace(embeds_from_wavs=hear)
 
         def prepare_conditionals(self, path, *args, **kwargs):
             data = Path(path).read_bytes()
@@ -109,10 +116,10 @@ def models(monkeypatch):
     def load(repo):
         state.loads.append(repo)
         return {speech.DESIGNER: Designer, speech.CHATTERBOX: Chatterbox, speech.MULTILINGUAL: Chatterbox,
-                speech.PROVIDERS['fish'].models[0]: Fish, speech.PROVIDERS['breeze'].models[0]: Breeze,
-                speech.MING: Ming, speech.QWEN_BASE: QwenBase, speech.TRANSCRIBER: Whisper}[repo]()
+                speech.FISH: Fish, speech.BREEZE: Breeze, speech.MING: Ming, speech.QWEN_BASE: QwenBase,
+                speech.TRANSCRIBER: Whisper}[repo]()
 
-    monkeypatch.setattr(speech.Engine, '_snapshot', snapshot)
+    monkeypatch.setattr(huggingface_hub, 'snapshot_download', snapshot)
     monkeypatch.setattr(mlx_audio.stt, 'load', load)
     monkeypatch.setattr(mlx_audio.tts.utils, 'load_model', load)
     return state
@@ -121,7 +128,6 @@ def models(monkeypatch):
 def test_ming_clones_the_saved_voice_in_english_and_spanish_with_one_transcript(tmp_path, models):
     voice = recording(tmp_path / 'voice.wav')
     engine = speech.Engine(tmp_path / 'hub', 'ming')
-    assert engine.provider_for('es').name == engine.provider_for('en').name == 'ming'
     for language, text in [('en', 'Hello.'), ('es', 'Hola.')]:
         audio, rate = engine.speak(text, voice, 42, language=language)
         assert rate == 44100 and audio.shape == (22050,) and audio.dtype == np.float32
@@ -134,14 +140,13 @@ def test_ming_clones_the_saved_voice_in_english_and_spanish_with_one_transcript(
 def test_qwen_base_clones_the_saved_voice_by_language_name_with_one_transcript(tmp_path, models):
     voice = recording(tmp_path / 'voice.wav')
     engine = speech.Engine(tmp_path / 'hub', 'qwen-base')
-    assert engine.provider_for('es').name == engine.provider_for('en').name == 'qwen-base'
     for language, name, text in [('en', 'English', 'Hello.'), ('es', 'Spanish', 'Hola.'), ('fr', 'auto', 'Bonjour.')]:
         audio, rate = engine.speak(text, voice, 42, language=language)
         assert rate == 24000 and audio.shape == (12000 + 4800,) and audio.dtype == np.float32
         assert models.spoken[-1] == {'text': text, 'wav': speech.with_silence(voice.read_bytes(), 1.0),
                                      'ref_text': 'Primera frase.', 'seed': 42, 'stream': False, 'language': name}
     assert models.loads == [speech.TRANSCRIBER, speech.QWEN_BASE]
-    assert models.snapshots[-1] == (speech.QWEN_BASE, None)
+    assert models.snapshots[-1] == (speech.QWEN_BASE, '50f45ef0047cde7e84c2ef04326acb8ada2436a7')
     assert len(models.transcribed) == 1
 
 
@@ -194,12 +199,6 @@ def test_a_soft_end_leaves_silence_and_an_all_silent_clip_alone(tmp_path):
     assert len(ended) / rate == pytest.approx(1 + 0.03 * 0 + 0.2, abs=0.05) and not ended[-int(0.2 * rate):].any()
 
 
-@pytest.mark.parametrize('provider, softened', [('audio8', True), ('qwen-base', True), ('qwen-base-gpu', True),
-                                                 ('chatterbox', False), ('ming', False), ('fish', False), ('breeze', False)])
-def test_only_the_narrators_that_stop_on_the_last_word_get_a_soft_end(provider, softened):
-    assert speech.PROVIDERS[provider].soft_end is softened
-
-
 @pytest.mark.parametrize('rate, channels', [(24000, 1), (44100, 2)])
 def test_ming_gets_the_saved_voice_followed_by_a_second_of_silence(tmp_path, models, rate, channels):
     voice = tmp_path / 'voice.wav'
@@ -211,14 +210,15 @@ def test_ming_gets_the_saved_voice_followed_by_a_second_of_silence(tmp_path, mod
     assert np.allclose(heard[:rate], sample, atol=1e-4) and not heard[rate:].any()
 
 
-def test_ming_downloads_the_pinned_checkpoint(tmp_path, monkeypatch):
+def test_ming_downloads_the_pinned_checkpoint(tmp_path, models, monkeypatch):
     import huggingface_hub
 
     calls = []
-    monkeypatch.setattr(huggingface_hub, 'snapshot_download', lambda repo, **kwargs: calls.append((repo, kwargs)))
-    speech.Engine(tmp_path / 'hub')._snapshot(speech.MING)
-    assert calls == [(speech.MING, {'cache_dir': tmp_path / 'hub', 'local_files_only': True,
-                                   'revision': 'd0d1da6f627e4b3f20cc2db6ba4aee86d45343ad'})]
+    monkeypatch.setattr(huggingface_hub, 'snapshot_download', lambda repo, **kwargs: calls.append((repo, kwargs)) or repo)
+    speech.Engine(tmp_path / 'hub', 'ming').speak('Hello.', recording(tmp_path / 'voice.wav'), 1)
+    assert [call for call in calls if call[0] == speech.MING] == [
+        (speech.MING, {'cache_dir': tmp_path / 'hub', 'local_files_only': True,
+                       'revision': 'd0d1da6f627e4b3f20cc2db6ba4aee86d45343ad'})]
 
 
 def test_explicit_chatterbox_narrates_english_and_spanish_without_whisper(tmp_path, models):
@@ -238,6 +238,19 @@ def test_explicit_chatterbox_narrates_english_and_spanish_without_whisper(tmp_pa
     assert models.prepared[1][1] == (24000,)
 
 
+def replaced_after_first_read(monkeypatch, voice, replace):
+    """Has `replace` overwrite `voice` just after its first read, as a voice saved while the engine works would."""
+    read, pending = Path.read_bytes, [True]
+
+    def read_then_replace(path):
+        data = read(path)
+        if pending and path == voice:
+            pending.clear()
+            replace()
+        return data
+    monkeypatch.setattr(Path, 'read_bytes', read_then_replace)
+
+
 @pytest.mark.parametrize('language', ['en', 'es'])
 def test_chatterbox_replacement_during_preparation_cannot_poison_an_identical_reference(tmp_path, models, monkeypatch, language):
     voice = recording(tmp_path / 'voice.wav')
@@ -245,15 +258,7 @@ def test_chatterbox_replacement_during_preparation_cannot_poison_an_identical_re
     untouched = tmp_path / 'untouched.wav'
     untouched.write_bytes(original)
     engine = speech.Engine(tmp_path / 'hub', 'chatterbox')
-    cached = engine._cached
-
-    def replace(cache, key, prepare):
-        if cache is engine.voices:
-            recording(voice, level=0.2)
-            monkeypatch.setattr(engine, '_cached', cached)
-        return cached(cache, key, prepare)
-
-    monkeypatch.setattr(engine, '_cached', replace)
+    replaced_after_first_read(monkeypatch, voice, lambda: recording(voice, level=0.2))
     engine.speak('First.', voice, 42, language=language)
     engine.speak('Second.', untouched, 42, language=language)
     replacement = voice.read_bytes()
@@ -273,7 +278,6 @@ def test_speaker_replacement_during_preparation_cannot_poison_an_identical_refer
     untouched = tmp_path / 'untouched.wav'
     untouched.write_bytes(original)
     engine = speech.Engine(tmp_path / 'hub')
-    model = engine._cloner(language)
     references = []
 
     def hear(wavs, sample_rate):
@@ -284,16 +288,8 @@ def test_speaker_replacement_during_preparation_cannot_poison_an_identical_refer
             return np.array([[1., 0.]] if float(audio.mean()) < 0.15 else [[0., 1.]])
         return np.array([[0., 1.]] if len(audio) == 15 * sample_rate else [[1., 0.]])
 
-    monkeypatch.setattr(model.ve, 'embeds_from_wavs', hear)
-    cached = engine._cached
-
-    def replace(cache, key, prepare):
-        if cache is engine.speakers:
-            recording(voice, level=0.2, rate=44100)
-            monkeypatch.setattr(engine, '_cached', cached)
-        return cached(cache, key, prepare)
-
-    monkeypatch.setattr(engine, '_cached', replace)
+    models.hear = hear
+    replaced_after_first_read(monkeypatch, voice, lambda: recording(voice, level=0.2, rate=44100))
     first, rate = engine.design('A low voice.', 42, language=language, others=[voice])
     second, _ = engine.design('A low voice.', 42, language=language, others=[untouched])
     assert voice.read_bytes() != original and untouched.read_bytes() == original
@@ -320,7 +316,7 @@ def test_fish_clones_the_saved_wav_with_detected_reference_text_and_actual_rate(
     assert models.spoken[0]['ref_text'] == 'Primera frase.'
     assert models.spoken[0]['stream'] is False
     assert rate == 44100 and audio.shape == (22050,) and audio.dtype == np.float32
-    assert models.loads == [speech.TRANSCRIBER, speech.PROVIDERS['fish'].models[0]]
+    assert models.loads == [speech.TRANSCRIBER, speech.FISH]
     assert models.snapshots[0] == (speech.TRANSCRIBER, speech.TRANSCRIBER_REVISION)
     again, _ = engine.speak('Target passage.', voice, 42, language=language)
     different, _ = engine.speak('Target passage.', voice, 43, language=language)
@@ -338,7 +334,7 @@ def test_breeze_gets_a_filename_for_the_exact_saved_wav_and_its_transcript(tmp_p
     assert rate == 24000 and audio.shape == (12000,)
     engine.speak('Again.', voice, 78)
     assert len(models.transcribed) == 1
-    assert models.loads == [speech.TRANSCRIBER, speech.PROVIDERS['breeze'].models[0]]
+    assert models.loads == [speech.TRANSCRIBER, speech.BREEZE]
 
 
 @pytest.mark.parametrize('provider', ['ming', 'chatterbox', 'fish'])
@@ -370,10 +366,10 @@ def test_breeze_rejects_spanish_before_reading_the_reference_or_loading_any_mode
     assert models.loads == models.snapshots == models.transcribed == models.spoken == []
 
 
-@pytest.mark.parametrize('provider', speech.PROVIDERS)
+@pytest.mark.parametrize('provider', speech.NARRATORS)
 def test_spanish_emotion_takes_are_offered_with_ming_chatterbox_and_audio8(provider):
-    assert speech.PROVIDERS[provider].emotions('es') == (speech.EMOTIONS if provider in ('ming', 'chatterbox', 'audio8') else ('neutral',))
-    assert speech.PROVIDERS[provider].emotions('en') == speech.EMOTIONS
+    assert speech.NARRATORS[provider].emotions('es') == (speech.EMOTIONS if provider in ('ming', 'chatterbox', 'audio8') else ('neutral',))
+    assert speech.NARRATORS[provider].emotions('en') == speech.EMOTIONS
 
 
 @pytest.mark.parametrize('provider', ['ming', 'fish', 'breeze'])
@@ -390,7 +386,7 @@ def test_replaced_reference_with_unchanged_path_and_mtime_gets_new_conditioning(
     if provider == 'fish':
         assert float(models.spoken[-1]['audio'].mean()) == pytest.approx(0.2, abs=0.0001)
     else:
-        assert models.spoken[-1]['wav'] == speech.with_silence(voice.read_bytes(), speech.PROVIDERS[provider].reference_silence)
+        assert models.spoken[-1]['wav'] == speech.with_silence(voice.read_bytes(), speech.NARRATORS[provider].reference_silence)
 
 
 def test_reference_replacement_during_transcription_cannot_poison_the_checksum_cache(tmp_path, models):
@@ -518,8 +514,8 @@ def lines_from(engine, made):
     """Has the engine's raw line maker return `made` and keep the reference WAV bytes each line was cloned from."""
     references = []
 
-    def line(text, voice_path, seed, language):
-        references.append(Path(voice_path).read_bytes())
+    def line(text, wav, seed, language):
+        references.append(wav)
         return made, 24000
     engine.raw = engine.raw._replace(line=line)
     return references
@@ -553,7 +549,7 @@ def test_a_clip_is_checked_for_rambling_once_it_is_shifted_back(tmp_path):
     # One word may run 3.4 seconds. Shifted back up three semitones, 3.6 seconds become 3.03.
     references = lines_from(engine, voiced(300, 3.6))
     engine.speak('Stop!', take, 42)
-    assert len(references) == speech.PROVIDERS['chatterbox'].retakes
+    assert len(references) == speech.NARRATORS['chatterbox'].retakes
     del references[:]
     engine.speak('Stop!', take, 42, semitones=-3)
     assert len(references) == 1
@@ -650,15 +646,15 @@ def test_a_book_in_another_language_still_gets_a_designed_voice_with_the_english
 @pytest.mark.parametrize('language', ['fr', 'de', 'es'])
 @pytest.mark.parametrize('provider', ['ming', 'chatterbox', 'fish'])
 def test_chatterbox_and_fish_narrate_any_language_their_model_accepts(provider, language):
-    speech.PROVIDERS[provider].validate_language(language)
+    speech.NARRATORS[provider].validate_language(language)
 
 
 @pytest.mark.parametrize('provider', ['breeze', 'breeze-gguf'])
 def test_breeze_refuses_non_english_narration_with_the_provider_to_switch_to(provider):
     with pytest.raises(ValueError, match='narrates English only, and this book is in fr'):
-        speech.PROVIDERS[provider].validate_language('fr')
+        speech.NARRATORS[provider].validate_language('fr')
     with pytest.raises(ValueError, match='For Spanish, restart with --tts-provider ming'):
-        speech.PROVIDERS[provider].validate_language('es')
+        speech.NARRATORS[provider].validate_language('es')
 
 
 def test_generation_result_rate_controls_the_returned_audio_not_the_model_default(tmp_path, models):
@@ -684,24 +680,21 @@ def test_generation_result_rate_controls_the_returned_audio_not_the_model_defaul
     ([SimpleNamespace(audio=mx.ones(10), sample_rate=24000),
       SimpleNamespace(audio=mx.ones(10), sample_rate=44100)], 'inconsistent sample rates'),
 ])
-def test_invalid_model_output_is_not_flattened_or_published(tmp_path, results, message):
-    engine = speech.Engine(tmp_path / 'hub')
+def test_invalid_model_output_is_not_flattened_or_published(results, message):
     with pytest.raises(RuntimeError, match=message):
-        engine._generate(results, 24000)
+        speech.joined(results, 24000)
 
 
 @pytest.mark.parametrize('rate', [0, -1, 24000.5, float('nan'), float('inf'), True, '24000', None])
-def test_invalid_actual_sample_rate_is_rejected(tmp_path, rate):
-    engine = speech.Engine(tmp_path / 'hub')
+def test_invalid_actual_sample_rate_is_rejected(rate):
     results = [SimpleNamespace(audio=mx.ones(10), sample_rate=rate)]
     with pytest.raises(RuntimeError, match='invalid sample rate'):
-        engine._generate(results, 24000)
+        speech.joined(results, 24000)
 
 
 @pytest.mark.parametrize('rate', [24000, 24000.0, np.int32(24000), np.float64(24000)])
-def test_integral_actual_rate_returns_an_integer_and_mono_float32(tmp_path, rate):
-    engine = speech.Engine(tmp_path / 'hub')
-    audio, actual = engine._generate([SimpleNamespace(audio=mx.ones((1, 10)), sample_rate=rate)], 44100)
+def test_integral_actual_rate_returns_an_integer_and_mono_float32(rate):
+    audio, actual = speech.joined([SimpleNamespace(audio=mx.ones((1, 10)), sample_rate=rate)], 44100)
     assert type(actual) is int and actual == 24000
     assert audio.shape == (10,) and audio.dtype == np.float32
     assert np.isfinite(audio).all()
@@ -736,7 +729,7 @@ def test_upload_and_candidate_approval_condition_on_the_new_saved_wav(world, tmp
         assert uploaded['audio'].shape == (15 * 44100,)
         assert float(uploaded['audio'].mean()) == pytest.approx(0.3, abs=0.001)
     else:
-        assert uploaded['wav'] == speech.with_silence(saved_upload, speech.PROVIDERS[provider].reference_silence)
+        assert uploaded['wav'] == speech.with_silence(saved_upload, speech.NARRATORS[provider].reference_silence)
     models.transcript = 'The approved candidate says this.'
     candidate = world.store.draft_path(narrator).read_bytes()
     assert world.client.post(f'{voice_url}/draft/approve').status_code == 200
@@ -751,7 +744,7 @@ def test_upload_and_candidate_approval_condition_on_the_new_saved_wav(world, tmp
         assert approved['audio'].shape == (8 * 44100,)
         assert float(approved['audio'].mean()) == pytest.approx(0.4, abs=0.001)
     else:
-        assert approved['wav'] == speech.with_silence(candidate, speech.PROVIDERS[provider].reference_silence)
+        assert approved['wav'] == speech.with_silence(candidate, speech.NARRATORS[provider].reference_silence)
     assert len(models.transcribed) == 3
     assert world.pipeline.speech_step() is False
     line = world.chapter()[0]['segments'][0]
@@ -798,9 +791,8 @@ def test_invalid_narration_never_lands_a_flac(world, tmp_path, models, result):
     voice = recording(tmp_path / 'upload.wav')
     assert world.client.post(f"/api/characters/{narrator['id']}/voice",
                              files={'file': ('voice.wav', voice.read_bytes(), 'audio/wav')}).status_code == 200
-    engine = speech.Engine(tmp_path / 'hub', 'fish')
-    engine.narrator = SimpleNamespace(sample_rate=44100, generate=lambda **kwargs: iter([result]))
-    world.pipeline.engine = engine
+    models.output = [result]
+    world.pipeline.engine = speech.Engine(tmp_path / 'hub', 'fish')
     world.pipeline.set_focus(world.book['id'], 0, 0, 0, 0)
     assert world.pipeline.speech_step()
     assert not world.pipeline.speech_step()
@@ -866,8 +858,8 @@ def test_breeze_rejection_preserves_cast_and_fish_restart_recovers(world, tmp_pa
         assert client.get(f"/api/segments/{clips[0]['id']}/audio").status_code == 200
         assert {path: path.read_bytes() for path in saved} == saved
     assert speech.DESIGNER in models.loads
-    assert speech.PROVIDERS['fish'].models[0] in models.loads
-    assert speech.PROVIDERS['breeze'].models[0] not in models.loads
+    assert speech.FISH in models.loads
+    assert speech.BREEZE not in models.loads
     assert all(call['language'] == 'Spanish' for call in models.spoken if 'design_text' in call)
 
 
@@ -919,7 +911,7 @@ def test_queued_spanish_candidate_under_breeze_remains_approvable_and_reusable_f
         assert not pipeline.speech_step()
         assert store.voice_path(narrator).read_bytes() == audition.content
         assert store.chapter_blocks(book_id, 0)[0]['segments'][0]['audio_state'] == 'ready'
-    assert models.loads == [speech.DESIGNER, speech.TRANSCRIBER, speech.PROVIDERS['fish'].models[0]]
+    assert models.loads == [speech.DESIGNER, speech.TRANSCRIBER, speech.FISH]
 
 
 def test_spanish_breeze_job_fails_with_an_actionable_error_and_no_model_load(world, tmp_path, models):

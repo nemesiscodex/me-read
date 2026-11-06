@@ -48,12 +48,26 @@ def make_epub(chapters=(PARAGRAPHS, CHAPTER_TWO)):
 
 
 class FakeEngine:
-    """Stands in for the speech models: records what it was asked and returns short tones."""
+    """Stands in for the speech models: records what it was asked and returns short tones. `narrator` reads every
+    language."""
 
-    provider = speech.PROVIDERS['chatterbox']
+    narrator = speech.NARRATORS['chatterbox']
 
-    def provider_for(self, language):
-        return self.provider
+    def emotions(self, language):
+        return self.narrator.emotions(language)
+
+    def validate_language(self, language):
+        self.narrator.validate_language(language)
+
+    def identity(self, language):
+        return self.narrator.identity
+
+    @property
+    def generation_identity(self):
+        return self.narrator.identity
+
+    def describe(self):
+        return []
 
     def __init__(self):
         self.designed, self.others, self.spoken, self.during_speak, self.languages = [], [], [], None, set()
@@ -129,7 +143,7 @@ class FakeImager:
 @pytest.fixture
 def world(tmp_path):
     engine, ask, draw = FakeEngine(), FakeTagger(), FakeImager()
-    app = create_app(tmp_path, engine=engine, ask=ask, draw=draw, run_workers=False, tts_provider='chatterbox')
+    app = create_app(tmp_path, engine=engine, ask=ask, draw=draw, run_workers=False)
     with TestClient(app) as client:
         book = client.post('/api/books', files={'file': ('gate.epub', make_epub(), 'application/epub+zip')}).json()
 

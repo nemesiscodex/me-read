@@ -197,7 +197,7 @@ def test_making_a_take_again_rereads_only_the_lines_in_that_emotion(world):
 
 def test_a_spanish_book_reads_every_line_in_the_characters_own_voice(world):
     from conftest import SPANISH, make_epub
-    world.engine.provider = speech.PROVIDERS['fish']
+    world.engine.narrator = speech.NARRATORS['fish']
     book = world.client.post('/api/books', files={'file': ('es.epub', make_epub((SPANISH,)), 'application/epub+zip')}).json()
     world.ask.answer = lambda prompt: {
         'new_characters': [{'ref': 'n1', 'name': 'Guardia 1', 'role': 'extra', 'gender': 'male', 'age': 'adult',
@@ -256,7 +256,7 @@ def test_a_take_requires_a_ready_voice_and_is_available_for_spanish_chatterbox(w
     assert world.client.post(f"/api/characters/{narrator['id']}/takes/happy").status_code == 422, 'no voice yet'
     book = world.client.post('/api/books', files={'file': ('es.epub', make_epub((SPANISH,)), 'application/epub+zip')}).json()
     narrador = world.store.narrator(book['id'])
-    world.store.run("UPDATE character SET voice_state = 'ready' WHERE id = ?", (narrador['id'],))
+    world.pipeline.design_voice(narrador)
     assert world.client.post(f"/api/characters/{narrador['id']}/takes/happy").status_code == 200
     assert world.store.take(narrador['id'], 'happy')['state'] == 'queued'
 
@@ -265,7 +265,7 @@ def test_a_take_requires_a_ready_voice_and_is_available_for_spanish_chatterbox(w
 @pytest.mark.parametrize('provider', ['ming', 'chatterbox'])
 def test_spanish_narrators_read_from_one_reusable_breeze_take(world, emotion, provider):
     from conftest import SPANISH, make_epub
-    world.engine.provider = speech.PROVIDERS[provider]
+    world.engine.narrator = speech.NARRATORS[provider]
     book = world.client.post('/api/books', files={'file': ('es.epub', make_epub((SPANISH,)), 'application/epub+zip')}).json()
     detail = world.client.get(f"/api/books/{book['id']}").json()
     assert detail['emotions'] == ['neutral', *DIRECTIONS]

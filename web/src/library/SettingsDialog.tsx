@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { api, type Provider, type Settings } from '../api'
+import { api, MAX_PICTURES_PER_PAGE, type Provider, type Settings } from '../api'
 
 const PROVIDERS: { id: Provider; label: string; model: 'claude_model' | 'codex_model' }[] = [
   { id: 'claude', label: 'Claude', model: 'claude_model' },
@@ -99,7 +99,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                 value={settings.pictures_per_page}
                 onChange={(event) => setSettings({ ...settings, pictures_per_page: Number(event.target.value) })}
               >
-                {Array.from({ length: 12 }, (_, n) => n + 1).map((count) => (
+                {Array.from({ length: MAX_PICTURES_PER_PAGE }, (_, n) => n + 1).map((count) => (
                   <option key={count}>{count}</option>
                 ))}
               </select>

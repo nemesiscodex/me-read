@@ -11,7 +11,7 @@ from pathlib import Path
 
 import soundfile as sf
 
-from . import epub, segment, speech
+from . import epub, jobs, segment, speech
 from .emotions import DIRECTIONS, EMOTIONS
 
 
@@ -22,23 +22,29 @@ def emotion_check(emotions):
 
 EMOTION = f"TEXT NOT NULL DEFAULT 'neutral' {emotion_check(EMOTIONS)}"
 SEMITONES = 'INTEGER NOT NULL DEFAULT 0 CHECK (semitones BETWEEN -12 AND 12)'
-# Whether the clip on disk was brought to the speech level all clips share. Clips made before that are leveled later.
 LEVELED = 'INTEGER NOT NULL DEFAULT 0'
+# A `--` comment documents the column that starts the next line. meread.web_types copies it into the web client's types.
 SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS generation_identity (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1), identity TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS book (
   id INTEGER PRIMARY KEY, title TEXT NOT NULL, author TEXT NOT NULL, block_count INTEGER NOT NULL,
-  position_block INTEGER NOT NULL DEFAULT 0, position_seq INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  position_block INTEGER NOT NULL DEFAULT 0,
+  -- With position_block, the line at the top of the page last read: segment.seq in that block.
+  position_seq INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  -- Two-letter code detected from the text: 'en' or 'es'. It picks the speech model and the sample voices' language.
   language TEXT NOT NULL DEFAULT 'en');
 CREATE TABLE IF NOT EXISTS chapter (
   book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE, idx INTEGER NOT NULL, title TEXT NOT NULL,
   first_block INTEGER NOT NULL, block_count INTEGER NOT NULL, PRIMARY KEY (book_id, idx));
 CREATE TABLE IF NOT EXISTS block (
-  id INTEGER PRIMARY KEY, book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE, idx INTEGER NOT NULL,
+  id INTEGER PRIMARY KEY, book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
+  -- Position in the whole book, zero based.
+  idx INTEGER NOT NULL,
   chapter INTEGER NOT NULL, tag TEXT NOT NULL CHECK (tag IN ('p', 'h')),
   tag_state TEXT NOT NULL CHECK (tag_state IN ('pending', 'tagging', 'tagged', 'failed')),
   scene_state TEXT NOT NULL DEFAULT 'pending' CHECK (scene_state IN ('pending', 'scanning', 'done')),
+  -- Who wrote the paragraph, such as a letter, when it is read in their voice. NULL otherwise.
   writer_id INTEGER REFERENCES character(id) ON DELETE SET NULL,
   UNIQUE (book_id, idx));
 CREATE TABLE IF NOT EXISTS character (
@@ -49,9 +55,17 @@ CREATE TABLE IF NOT EXISTS character (
   pitch TEXT NOT NULL CHECK (pitch IN ('low', 'medium', 'high')),
   description TEXT NOT NULL DEFAULT '',
   voice_state TEXT NOT NULL DEFAULT 'none' CHECK (voice_state IN ('none', 'designing', 'ready', 'failed')),
+  -- Bumped whenever the 15 second sample changes; use it to bust the audio cache.
   voice_rev INTEGER NOT NULL DEFAULT 0, error TEXT,
+  -- A candidate voice sample being auditioned. The current voice stays in use until the candidate is approved.
   draft_state TEXT NOT NULL DEFAULT 'none' CHECK (draft_state IN ('none', 'queued', 'designing', 'ready', 'failed')),
-  draft_rev INTEGER NOT NULL DEFAULT 0, draft_status TEXT, draft_updated_at REAL, appearance TEXT NOT NULL DEFAULT '',
+  draft_rev INTEGER NOT NULL DEFAULT 0,
+  -- The current candidate step or failure reason.
+  draft_status TEXT,
+  -- When draft_status last changed, in server time (Unix seconds).
+  draft_updated_at REAL,
+  -- How the character looks, in words. The portrait is drawn from it, and drawn again whenever it changes.
+  appearance TEXT NOT NULL DEFAULT '',
   portrait_state TEXT NOT NULL DEFAULT 'none' CHECK (portrait_state IN ('none', 'drawing', 'ready', 'failed')),
   portrait_rev INTEGER NOT NULL DEFAULT 0, portrait_error TEXT);
 CREATE TABLE IF NOT EXISTS usage (
@@ -60,20 +74,37 @@ CREATE TABLE IF NOT EXISTS usage (
 CREATE TABLE IF NOT EXISTS segment (
   id INTEGER PRIMARY KEY, book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
   block_id INTEGER NOT NULL REFERENCES block(id) ON DELETE CASCADE, block_idx INTEGER NOT NULL, seq INTEGER NOT NULL,
+  -- Raw text. A block's segments concatenate to exactly the block's text.
   text TEXT NOT NULL, kind TEXT NOT NULL CHECK (kind IN ('narration', 'speech')),
+  -- NULL while a spoken line is still waiting for the tagger.
   character_id INTEGER REFERENCES character(id),
   audio_state TEXT NOT NULL DEFAULT 'none' CHECK (audio_state IN ('none', 'generating', 'ready', 'failed')),
-  audio_rev INTEGER NOT NULL DEFAULT 0, duration REAL, error TEXT, emotion {EMOTION}, leveled {LEVELED});
+  audio_rev INTEGER NOT NULL DEFAULT 0, duration REAL, error TEXT,
+  -- How a spoken line is said. Narration is always neutral.
+  emotion {EMOTION},
+  -- 1 once the clip on disk is at the speech level all clips share. Clips made before that are leveled later, which
+  -- changes the file, not audio_rev.
+  leveled {LEVELED});
 CREATE INDEX IF NOT EXISTS segment_order ON segment (book_id, block_idx, seq);
 CREATE INDEX IF NOT EXISTS segment_unleveled ON segment (id) WHERE audio_state = 'ready' AND leveled = 0;
 CREATE INDEX IF NOT EXISTS segment_character ON segment (character_id);
 CREATE TABLE IF NOT EXISTS moment (
   id INTEGER PRIMARY KEY, book_id INTEGER NOT NULL REFERENCES book(id) ON DELETE CASCADE,
-  block_id INTEGER NOT NULL UNIQUE REFERENCES block(id) ON DELETE CASCADE, block_idx INTEGER NOT NULL,
-  kind TEXT NOT NULL DEFAULT 'picture' CHECK (kind IN ('picture', 'clear')), scene TEXT NOT NULL,
-  title TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', importance INTEGER NOT NULL DEFAULT 5,
+  block_id INTEGER NOT NULL UNIQUE REFERENCES block(id) ON DELETE CASCADE,
+  -- block.idx of the paragraph.
+  block_idx INTEGER NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'picture' CHECK (kind IN ('picture', 'clear')),
+  -- What the picture is drawn from. Empty for a clear.
+  scene TEXT NOT NULL,
+  -- A few words to put under the picture. Empty for a clear, and for a moment found before titles existed.
+  title TEXT NOT NULL DEFAULT '',
+  -- One sentence on what happens.
+  summary TEXT NOT NULL DEFAULT '',
+  -- 1 to 10. Of the moments on a page the highest count first.
+  importance INTEGER NOT NULL DEFAULT 5,
   image_state TEXT NOT NULL DEFAULT 'none' CHECK (image_state IN ('none', 'drawing', 'ready', 'failed')),
   image_rev INTEGER NOT NULL DEFAULT 0, error TEXT, wanted INTEGER NOT NULL DEFAULT 0,
+  -- The reader asked for this picture by hand. It is drawn wherever it is and takes none of its page's places.
   starred INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS moment_order ON moment (book_id, block_idx);
 CREATE TABLE IF NOT EXISTS moment_character (
@@ -85,7 +116,10 @@ CREATE TABLE IF NOT EXISTS voice_take (
   character_id INTEGER NOT NULL REFERENCES character(id) ON DELETE CASCADE,
   emotion TEXT NOT NULL {emotion_check(DIRECTIONS)},
   state TEXT NOT NULL DEFAULT 'none' CHECK (state IN ('none', 'queued', 'making', 'ready', 'failed')),
-  rev INTEGER NOT NULL DEFAULT 0, made_from INTEGER, error TEXT, semitones {SEMITONES}, PRIMARY KEY (character_id, emotion));
+  -- Bumped each time the take is made again by hand.
+  rev INTEGER NOT NULL DEFAULT 0, made_from INTEGER, error TEXT,
+  -- Lines are cloned from the take moved by this many semitones, then moved back. Below 0 for a take too high to clone.
+  semitones {SEMITONES}, PRIMARY KEY (character_id, emotion));
 CREATE TABLE IF NOT EXISTS emotion_direction (emotion TEXT PRIMARY KEY, specification TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS clip (
   key TEXT PRIMARY KEY, character_id INTEGER NOT NULL REFERENCES character(id) ON DELETE CASCADE,
@@ -94,14 +128,21 @@ CREATE TABLE IF NOT EXISTS clip (
   queue_pos INTEGER, duration REAL, error TEXT, requested_at REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS clip_queue ON clip (queue_pos) WHERE state = 'queued';
 """
+# The columns of each row the API returns. meread.web_types writes the web client's types from these.
+BOOK = 'id, title, author, block_count, position_block, position_seq, language'
+CHAPTER = 'idx AS "index", title, first_block, block_count'
+BLOCK = 'id, idx, chapter, tag, tag_state, writer_id'
 CLIP = 'key, state, duration, error'
 SEGMENT = 'id, block_id, seq, text, kind, character_id, emotion, audio_state, audio_rev, duration, error, leveled'
 CHARACTER = ('c.id, c.book_id, c.name, c.role, c.gender, c.age, c.pitch, c.description, c.voice_state, c.voice_rev, '
              'c.error, c.draft_state, c.draft_rev, c.draft_status, c.draft_updated_at, c.appearance, c.portrait_state, c.portrait_rev, c.portrait_error, (SELECT COUNT(*) FROM segment s WHERE s.character_id = c.id AND s.kind = \'speech\') AS line_count')
+REUSABLE_VOICE = ('c.id, c.book_id, c.name, c.gender, c.age, c.pitch, c.description, c.voice_rev, b.title AS book_title, '
+                  'b.author AS book_author, b.language')
 MOMENT = ('m.id, m.block_id, m.block_idx, m.kind, m.title, m.summary, m.scene, m.importance, m.image_state, m.image_rev, '
           'm.error, m.starred')
 # A take is made from one revision of the character's voice. Once the voice is replaced, the take counts as never made.
 TAKE_STATE = "CASE WHEN t.state IN ('ready', 'failed') AND t.made_from != c.voice_rev THEN 'none' ELSE t.state END"
+TAKE = f't.emotion, {TAKE_STATE} AS state, t.rev, t.semitones'
 # The moments a character is drawn in.
 FEATURING = 'm.id IN (SELECT moment_id FROM moment_character WHERE character_id = ?)'
 FIELDS = ('name', 'gender', 'age', 'pitch', 'description', 'appearance')
@@ -157,16 +198,9 @@ class Store:
             self.run("UPDATE block SET scene_state = 'pending' WHERE scene_state = 'done'")
         # Work interrupted by a restart goes back in the queue.
         self.run("UPDATE block SET tag_state = 'pending' WHERE tag_state = 'tagging'")
-        self.run("UPDATE segment SET audio_state = 'none' WHERE audio_state = 'generating'")
-        self.run("UPDATE character SET voice_state = 'none' WHERE voice_state = 'designing'")
-        self.run("UPDATE character SET draft_state = 'queued', draft_status = 'Interrupted by restart; waiting for the speech worker.', "
-                 "draft_updated_at = ? WHERE draft_state = 'designing'", (time.time(),))
         self.run("UPDATE block SET scene_state = 'pending' WHERE scene_state = 'scanning'")
-        self.run("UPDATE character SET portrait_state = 'none' WHERE portrait_state = 'drawing'")
-        self.run("UPDATE moment SET image_state = 'none' WHERE image_state = 'drawing'")
-        self.run("UPDATE voice_take SET state = 'queued' WHERE state = 'making'")
-        # Clips wait for their client to ask again, as the reader's focus does. A failed clip gets another try.
-        self.run("UPDATE clip SET state = 'idle' WHERE state != 'ready'")
+        for job in jobs.JOBS:
+            job.recover(self)
 
     def _allow_new_emotions(self):
         """Let emotions added after the library was made past its checks. SQLite cannot alter a CHECK, but widening
@@ -331,20 +365,36 @@ class Store:
         return book_id
 
     def books(self):
-        return self.all('SELECT id, title, author, block_count, position_block, position_seq, language FROM book ORDER BY created_at DESC, id DESC')
+        return self.all(f'SELECT {BOOK} FROM book ORDER BY created_at DESC, id DESC')
+
+    def summary(self, book_id):
+        return self.one(f'SELECT {BOOK} FROM book WHERE id = ?', (book_id,))
 
     def book(self, book_id):
-        book = self.one('SELECT id, title, author, block_count, position_block, position_seq, language FROM book WHERE id = ?', (book_id,))
+        book = self.summary(book_id)
         if book:
-            book['chapters'] = self.all('SELECT idx AS "index", title, first_block, block_count FROM chapter '
-                                        'WHERE book_id = ? ORDER BY idx', (book_id,))
+            book['chapters'] = self.all(f'SELECT {CHAPTER} FROM chapter WHERE book_id = ? ORDER BY idx', (book_id,))
             book['characters'] = self.characters(book_id)
         return book
 
+    def language(self, book_id):
+        return self.one('SELECT language FROM book WHERE id = ?', (book_id,))['language']
+
+    def delete_book(self, book_id):
+        """Remove a book with its files. Clips read aloud for other apps keep their files."""
+        with self.lock:
+            self.run('DELETE FROM segment WHERE book_id = ?', (book_id,))
+            self.run('DELETE FROM book WHERE id = ?', (book_id,))
+        shutil.rmtree(self.book_dir(book_id), ignore_errors=True)
+
+    def block(self, block_id):
+        """Where a paragraph is: its id, book and position."""
+        return self.one('SELECT id, book_id, idx FROM block WHERE id = ?', (block_id,))
+
     def blocks(self, book_id, first, last):
         """Blocks with their segments for block positions first..last inclusive."""
-        blocks = self.all('SELECT id, idx, chapter, tag, tag_state, writer_id FROM block WHERE book_id = ? AND idx BETWEEN ? AND ? '
-                          'ORDER BY idx', (book_id, first, last))
+        blocks = self.all(f'SELECT {BLOCK} FROM block WHERE book_id = ? AND idx BETWEEN ? AND ? ORDER BY idx',
+                          (book_id, first, last))
         by_id = {b['id']: b for b in blocks}
         for b in blocks:
             b['segments'] = []
@@ -365,7 +415,7 @@ class Store:
             characters = self.all(f"SELECT {CHARACTER} FROM character c WHERE {where} ORDER BY c.role != 'narrator', c.id", args)
             ids = [c['id'] for c in characters]
             made = {(t.pop('character_id'), t['emotion']): t for t in self.all(
-                f'SELECT t.character_id, t.emotion, {TAKE_STATE} AS state, t.rev, t.semitones FROM voice_take t '
+                f'SELECT t.character_id, {TAKE} FROM voice_take t '
                 f"JOIN character c ON c.id = t.character_id WHERE t.character_id IN ({','.join('?' * len(ids))})", ids)}
         for c in characters:
             c['takes'] = [made.get((c['id'], emotion), {'emotion': emotion, 'state': 'none', 'rev': 0, 'semitones': 0})
@@ -378,9 +428,7 @@ class Store:
     def reusable_voices(self):
         with self.lock:
             voices = self.all(
-                'SELECT c.id, c.book_id, c.name, c.gender, c.age, c.pitch, c.description, c.voice_rev, '
-                'b.title AS book_title, b.author AS book_author, b.language FROM character c '
-                "JOIN book b ON b.id = c.book_id WHERE c.voice_state = 'ready' "
+                f"SELECT {REUSABLE_VOICE} FROM character c JOIN book b ON b.id = c.book_id WHERE c.voice_state = 'ready' "
                 'ORDER BY c.name COLLATE NOCASE, b.title COLLATE NOCASE, c.id')
             return [voice for voice in voices if self.voice_path(voice).is_file()]
 
@@ -433,17 +481,25 @@ class Store:
             self.draft_path(self.character(character_id)).unlink(missing_ok=True)
 
     def approve_draft(self, character_id):
-        """Make the candidate the character's voice and drop the clips read in the old one. False without a candidate."""
+        """Make the candidate the character's voice. False without a candidate."""
         with self.lock:
             character = self.character(character_id)
             draft = self.draft_path(character)
             if character['draft_state'] != 'ready' or not draft.exists():
                 return False
-            draft.replace(self.voice_path(character))
-            self.reset_voice(character_id)
-            self.run("UPDATE character SET voice_state = 'ready', draft_state = 'none', "
-                     "draft_status = NULL, draft_updated_at = NULL WHERE id = ?", (character_id,))
+            self.replace_voice(character_id, draft.read_bytes())
+            draft.unlink()
+            self.run("UPDATE character SET draft_state = 'none', draft_status = NULL, draft_updated_at = NULL WHERE id = ?",
+                     (character_id,))
             return True
+
+    def replace_voice(self, character_id, wav):
+        """Make the WAV bytes the character's voice and drop the takes, lines and clips made in the old one. The file
+        moves into place whole, so the speech worker and the browser never read half of it."""
+        def ready():
+            self.reset_voice(character_id)
+            return self.run("UPDATE character SET voice_state = 'ready' WHERE id = ?", (character_id,)).rowcount
+        jobs.land(self, lambda path: Path(path).write_bytes(wav), self.voice_path(self.character(character_id)), ready)
 
     def reset_voice(self, character_id):
         with self.lock:
@@ -459,21 +515,14 @@ class Store:
     def reuse_voice(self, character_id, source_id, source_rev):
         """Copy a saved voice independently of its book. Refuse a sample changed since it was offered."""
         with self.lock:
-            character, source = self.character(character_id), self.character(source_id)
+            source = self.character(source_id)
             if source is None or source['voice_state'] != 'ready' or source['voice_rev'] != source_rev:
                 return False
             path = self.voice_path(source)
             if not path.is_file():
                 return False
-            target = self.voice_path(character)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with tempfile.TemporaryDirectory(dir=target.parent) as folder:
-                sample = Path(folder) / 'voice.wav'
-                shutil.copyfile(path, sample)
-                sample.replace(target)
+            self.replace_voice(character_id, path.read_bytes())
             self.discard_draft(character_id)
-            self.reset_voice(character_id)
-            self.run("UPDATE character SET voice_state = 'ready' WHERE id = ?", (character_id,))
             return True
 
     def shift_draft(self, character_id, semitones):
@@ -515,13 +564,18 @@ class Store:
             return True
 
     def merge_character(self, character_id, into):
+        """Give a character's lines, writings and pictures to `into`, then delete it with its voice, takes and portrait."""
         with self.lock:
+            character = self.character(character_id)
             self.run('UPDATE block SET writer_id = ? WHERE writer_id = ?', (into, character_id))
             self.run('UPDATE segment SET character_id = ? WHERE character_id = ?', (into, character_id))
             self.invalidate_audio('character_id = ?', (into,))
             # A moment that shows both keeps the survivor's row; the other goes with the deleted character.
             self.run('UPDATE OR IGNORE moment_character SET character_id = ? WHERE character_id = ?', (into, character_id))
             self.run('DELETE FROM character WHERE id = ?', (character_id,))
+        for path in (self.voice_path(character), self.draft_path(character), self.portrait_path(character),
+                     *(self.take_path(character, emotion) for emotion in DIRECTIONS)):
+            path.unlink(missing_ok=True)
 
     # Segments
 
@@ -588,6 +642,12 @@ class Store:
     def redraw_moments(self, where, args=()):
         self.run("UPDATE moment AS m SET image_state = 'none', image_rev = image_rev + 1, error = NULL "
                  f"WHERE m.kind = 'picture' AND {where}", args)
+
+    def redraw_moment(self, moment_id):
+        """Draw a picture again. Asking by hand also asks for one the page cap or a quick page turn left undrawn."""
+        with self.lock:
+            self.run('UPDATE moment SET wanted = 1 WHERE id = ?', (moment_id,))
+            self.redraw_moments('m.id = ?', (moment_id,))
 
     # Clips read aloud for other apps
 

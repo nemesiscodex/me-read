@@ -6,8 +6,6 @@ focus, do it, record the result. Nothing is queued in memory, so a restart or a 
 the next lookup finds.
 """
 import logging
-import os
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -15,7 +13,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from . import images, scenes, speech, tagger
+from . import images, jobs, scenes, speech, tagger
 from .segment import chunks, speakable
 from .store import illustrating
 
@@ -34,9 +32,6 @@ SILENCE = 0.6, 24000
 # Seconds of silence between the pieces of a long clip, the reader's default pause after a sentence.
 PIECE_PAUSE = 0.4
 WORKERS = 'tagger', 'scenes', 'speech', 'images'
-# What a drawing is claimed and landed through: table, state column, revision column, error column.
-PORTRAIT = 'character', 'portrait_state', 'portrait_rev', 'portrait_error'
-MOMENT = 'moment', 'image_state', 'image_rev', 'error'
 
 
 class Pipeline:
@@ -139,7 +134,7 @@ class Pipeline:
         marks = ','.join('?' * len(ids))
         self.store.run(f"UPDATE block SET tag_state = 'tagging' WHERE id IN ({marks})", ids)
         self.publish(book_id, {'type': 'blocks', 'blocks': [{'id': i, 'tag_state': 'tagging'} for i in ids]})
-        book = self.store.one('SELECT title, author, language FROM book WHERE id = ?', (book_id,))
+        book = self.store.book(book_id)
         self._say('tagger', f"Asking {settings['provider']} who speaks in {len(batch)} paragraphs")
         chapter = self.store.one('SELECT first_block, block_count FROM chapter WHERE book_id = ? AND idx = ?',
                                  (book_id, pending[0]['chapter']))
@@ -205,7 +200,7 @@ class Pipeline:
         start, ids = batch[0]['idx'], [b['id'] for b in batch]
         marks = ','.join('?' * len(ids))
         self.store.run(f"UPDATE block SET scene_state = 'scanning' WHERE id IN ({marks})", ids)
-        book = self.store.one('SELECT title, author, language FROM book WHERE id = ?', (book_id,))
+        book = self.store.book(book_id)
         self._say('scenes', f"Asking {settings['provider']} for moments to draw in {len(batch)} paragraphs")
         last = self.store.one('SELECT kind, summary, scene, block_idx FROM moment WHERE book_id = ? AND block_idx < ? '
                               'ORDER BY block_idx DESC LIMIT 1', (book_id, start))
@@ -261,11 +256,10 @@ class Pipeline:
             return False
         book_id = focus['book_id']
         try:
-            self.engine.provider_for(self._language(book_id)).validate_language(self._language(book_id))
+            self.engine.validate_language(self.store.language(book_id))
         except ValueError as e:
-            changed = self.store.run("UPDATE segment SET audio_state = 'failed', error = ? WHERE book_id = ? "
-                                     "AND block_idx BETWEEN ? AND ? AND audio_state = 'none'",
-                                     (str(e), book_id, focus['first'], focus['last'])).rowcount
+            changed = jobs.AUDIO.refuse(self.store, 'book_id = ? AND block_idx BETWEEN ? AND ?',
+                                        (book_id, focus['first'], focus['last']), str(e))
             if changed:
                 self._publish_segments(book_id, 'book_id = ? AND block_idx BETWEEN ? AND ?',
                                        (book_id, focus['first'], focus['last']))
@@ -283,8 +277,8 @@ class Pipeline:
         if seg:
             character = self.store.character(seg['character_id']) if seg['character_id'] else self.store.narrator(book_id)
             if character['voice_state'] == 'failed':
-                self.store.run("UPDATE segment SET audio_state = 'failed', error = ? WHERE id = ? AND audio_rev = ?",
-                               (f"{character['name']} has no voice: {character['error']}", seg['id'], seg['audio_rev']))
+                jobs.AUDIO.refuse(self.store, 'id = ? AND audio_rev = ?', (seg['id'], seg['audio_rev']),
+                                  f"{character['name']} has no voice: {character['error']}")
                 self._publish_segments(book_id, 'id = ?', (seg['id'],))
             elif character['voice_state'] != 'ready':
                 self.design_voice(character)
@@ -329,29 +323,11 @@ class Pipeline:
             log.warning('could not level the clip of segment %s: %s', clip['id'], e)
             mark()
             return
-        self._land(lambda tmp: sf.write(tmp, speech.leveled(audio, rate), rate, format='FLAC', subtype='PCM_16'), path, mark)
-
-    def _language(self, book_id):
-        return self.store.one('SELECT language FROM book WHERE id = ?', (book_id,))['language']
+        jobs.land(self.store, lambda tmp: sf.write(tmp, speech.leveled(audio, rate), rate, format='FLAC', subtype='PCM_16'),
+                  path, mark)
 
     def emotions(self, book_id):
-        return self.engine.provider_for(self._language(book_id)).emotions(self._language(book_id))
-
-    def _land(self, write, target, claim):
-        """Write a file next to `target` and move it into place only if `claim` still holds in the database."""
-        target.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=target.parent, suffix=target.suffix)
-        os.close(fd)
-        try:
-            write(tmp)
-            with self.store.lock:
-                if claim():
-                    os.replace(tmp, target)
-                    return True
-        finally:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-        return False
+        return self.engine.emotions(self.store.language(book_id))
 
     def _wait_for_speech(self, error, what):
         """Leave the speech worker idle for a while after the speech service did not answer."""
@@ -365,66 +341,51 @@ class Pipeline:
 
     def design_voice(self, character):
         rev, book_id = character['voice_rev'], character['book_id']
-        claimed = self.store.run("UPDATE character SET voice_state = 'designing', error = NULL "
-                                 "WHERE id = ? AND voice_rev = ? AND voice_state = 'none'", (character['id'], rev)).rowcount
-        if not claimed:
+        claim = jobs.VOICE.claim(self.store, character['id'], rev)
+        if not claim:
             return
         self._publish_cast(book_id)
         self._say('speech', f"Designing a voice for {character['name']}")
         try:
             audio, rate = self.engine.design(speech.voice_instruction(character), seed=character['id'] * 1000 + rev,
-                                             language=self._language(book_id), others=self._other_voices(character),
+                                             language=self.store.language(book_id), others=self._other_voices(character),
                                              ceiling=speech.pitch_ceiling(character))
-            self._land(lambda tmp: sf.write(tmp, audio, rate, format='WAV'), self.store.voice_path(character),
-                       lambda: self.store.run("UPDATE character SET voice_state = 'ready' WHERE id = ? AND voice_rev = ? "
-                                              "AND voice_state = 'designing'", (character['id'], rev)).rowcount)
+            claim.land(lambda tmp: sf.write(tmp, audio, rate, format='WAV'), self.store.voice_path(character))
         except speech.Unavailable as e:
             self._wait_for_speech(e, f"{character['name']}'s voice")
-            self.store.run("UPDATE character SET voice_state = 'none' WHERE id = ? AND voice_rev = ? "
-                           "AND voice_state = 'designing'", (character['id'], rev))
+            claim.retry(e)
         except Exception as e:
             log.exception('voice design failed for %s', character['name'])
-            self.store.run("UPDATE character SET voice_state = 'failed', error = ? WHERE id = ? AND voice_rev = ? "
-                           "AND voice_state = 'designing'", (str(e)[:300], character['id'], rev))
+            claim.fail(e)
         self._publish_cast(book_id)
 
     def design_draft(self, character):
         """Design a candidate sample next to the current voice, for the reader to hear before approving."""
         rev, book_id = character['draft_rev'], character['book_id']
-        if not self.store.run("UPDATE character SET draft_state = 'designing', draft_status = 'Starting voice design…', "
-                              "draft_updated_at = ? WHERE id = ? AND draft_rev = ? AND draft_state = 'queued'",
-                              (time.time(), character['id'], rev)).rowcount:
+        claim = jobs.DRAFT.claim(self.store, character['id'], rev)
+        if not claim:
             return
         self._publish_cast(book_id)
         self._say('speech', f"Designing a candidate voice for {character['name']}")
 
         def progress(message):
-            if self.store.run("UPDATE character SET draft_status = ?, draft_updated_at = ? "
-                              "WHERE id = ? AND draft_rev = ? AND draft_state = 'designing'",
-                              (message, time.time(), character['id'], rev)).rowcount:
+            if claim.progress(message):
                 log.info('Candidate voice %s revision %s: %s', character['id'], rev, message)
                 self._publish_cast(book_id)
                 self._say('speech', f"{character['name']}: {message}")
 
         try:
             audio, rate = self.engine.design(speech.voice_instruction(character), seed=character['id'] * 1000 + 500 + rev,
-                                             language=self._language(book_id), others=self._other_voices(character),
+                                             language=self.store.language(book_id), others=self._other_voices(character),
                                              ceiling=speech.pitch_ceiling(character), progress=progress)
             progress('Saving the candidate sample…')
-            self._land(lambda tmp: sf.write(tmp, audio, rate, format='WAV'), self.store.draft_path(character),
-                       lambda: self.store.run("UPDATE character SET draft_state = 'ready', draft_status = NULL, draft_updated_at = ? "
-                                              "WHERE id = ? AND draft_rev = ? AND draft_state = 'designing'",
-                                              (time.time(), character['id'], rev)).rowcount)
+            claim.land(lambda tmp: sf.write(tmp, audio, rate, format='WAV'), self.store.draft_path(character))
         except speech.Unavailable as e:
             self._wait_for_speech(e, f"{character['name']}'s candidate voice")
-            self.store.run("UPDATE character SET draft_state = 'queued', draft_status = ?, draft_updated_at = ? "
-                           "WHERE id = ? AND draft_rev = ? AND draft_state = 'designing'",
-                           (f'{e} Retrying automatically.', time.time(), character['id'], rev))
+            claim.retry(e)
         except Exception as e:
             log.exception('candidate voice failed for %s', character['name'])
-            self.store.run("UPDATE character SET draft_state = 'failed', draft_status = ?, draft_updated_at = ? "
-                           "WHERE id = ? AND draft_rev = ? AND draft_state = 'designing'",
-                           (str(e)[:600], time.time(), character['id'], rev))
+            claim.fail(e)
         self._publish_cast(book_id)
 
     def make_take(self, character, take):
@@ -432,36 +393,30 @@ class Pipeline:
         lines already read in that emotion are read again once it lands."""
         character_id, emotion, rev, book_id = character['id'], take['emotion'], take['rev'], character['book_id']
         self.store.run('INSERT OR IGNORE INTO voice_take (character_id, emotion) VALUES (?, ?)', (character_id, emotion))
-        if not self.store.run("UPDATE voice_take SET state = 'making', made_from = ?, error = NULL WHERE character_id = ? "
-                              "AND emotion = ? AND rev = ? AND state != 'making'",
-                              (character['voice_rev'], character_id, emotion, rev)).rowcount:
+        claim = jobs.TAKE.claim(self.store, (character_id, emotion), rev, made_from=character['voice_rev'])
+        if not claim:
             return
         self._publish_cast(book_id)
         self._say('speech', f"Directing {character['name']}'s voice: {emotion}")
-        def settle(state, error=None):
-            return self.store.run('UPDATE voice_take SET state = ?, error = ? WHERE character_id = ? AND emotion = ? '
-                                  "AND rev = ? AND state = 'making'", (state, error, character_id, emotion, rev)).rowcount
         try:
             audio, rate = self.engine.direct(self.store.voice_path(character), emotion,
                                              seed=character_id * 1000 + 700 + rev)
-            landed = self._land(lambda tmp: sf.write(tmp, audio, rate, format='WAV'),
-                                self.store.take_path(character, emotion), lambda: settle('ready'))
+            landed = claim.land(lambda tmp: sf.write(tmp, audio, rate, format='WAV'), self.store.take_path(character, emotion))
             if landed and take['state'] == 'queued':
                 where = "character_id = ? AND emotion = ? AND kind = 'speech'", (character_id, emotion)
                 self.store.invalidate_audio(*where)
                 self._publish_segments(book_id, *where)
         except speech.Unavailable as e:
             self._wait_for_speech(e, f"{character['name']}'s {emotion} take")
-            settle('queued')
+            claim.retry(e)
         except Exception as e:
             log.exception('the %s take failed for %s', emotion, character['name'])
-            settle('failed', str(e)[:300])
+            claim.fail(e)
         self._publish_cast(book_id)
 
     def generate(self, book_id, seg, character, emotion='neutral'):
-        claim = (seg['id'], seg['audio_rev'])
-        if not self.store.run("UPDATE segment SET audio_state = 'generating' WHERE id = ? AND audio_rev = ? "
-                              "AND audio_state = 'none'", claim).rowcount:
+        claim = jobs.AUDIO.claim(self.store, seg['id'], seg['audio_rev'])
+        if not claim:
             return
         self._publish_segments(book_id, 'id = ?', (seg['id'],))
         self._say('speech', f"Reading as {character['name']}" + ('' if emotion == 'neutral' else f', {emotion}'))
@@ -471,36 +426,27 @@ class Pipeline:
             text = speakable(seg['text'])
             if text:
                 audio, rate = self.engine.speak(text, voice, seed=seg['audio_rev'] * 1000 + 42,
-                                                language=self._language(book_id), semitones=semitones)
+                                                language=self.store.language(book_id), semitones=semitones)
             else:
                 audio, rate = np.zeros(int(SILENCE[0] * SILENCE[1]), dtype='float32'), SILENCE[1]
-            duration = len(audio) / rate
-            self._land(lambda tmp: sf.write(tmp, audio, rate, format='FLAC', subtype='PCM_16'),
-                       self.store.audio_path(book_id, seg['id']),
-                       lambda: self.store.run("UPDATE segment SET audio_state = 'ready', duration = ?, leveled = 1 "
-                                              "WHERE id = ? AND audio_rev = ? AND audio_state = 'generating'",
-                                              (duration, *claim)).rowcount)
+            claim.land(lambda tmp: sf.write(tmp, audio, rate, format='FLAC', subtype='PCM_16'),
+                       self.store.audio_path(book_id, seg['id']), duration=len(audio) / rate, leveled=1)
         except speech.Unavailable as e:
             self._wait_for_speech(e, f"segment {seg['id']}")
-            self.store.run("UPDATE segment SET audio_state = 'none' WHERE id = ? AND audio_rev = ? "
-                           "AND audio_state = 'generating'", claim)
+            claim.retry(e)
         except Exception as e:
             log.exception('speech failed for segment %s', seg['id'])
-            self.store.run("UPDATE segment SET audio_state = 'failed', error = ? WHERE id = ? AND audio_rev = ? "
-                           "AND audio_state = 'generating'", (str(e)[:300], *claim))
+            claim.fail(e)
         self._publish_segments(book_id, 'id = ?', (seg['id'],))
 
     def read_clip(self, clip, character):
         """Read text a client asked for in a character's saved voice. A narrator cuts a long line short, so the text is
         read a segment-sized piece at a time, with the reader's pause after a sentence between pieces."""
         key = clip['key']
-        if not self.store.run("UPDATE clip SET state = 'generating' WHERE key = ? AND state = 'queued'", (key,)).rowcount:
+        claim = jobs.CLIP.claim(self.store, key)
+        if not claim:
             return
         self._say('speech', f"Reading aloud as {character['name']}")
-
-        def settle(state, duration=None, error=None):
-            return self.store.run("UPDATE clip SET state = ?, duration = ?, error = ? WHERE key = ? AND state = 'generating'",
-                                  (state, duration, error, key)).rowcount
         try:
             voice = self.store.voice_path(character)
             said = [self.engine.speak(text, voice, seed=42, language=clip['language'])
@@ -511,19 +457,19 @@ class Pipeline:
                 audio = np.concatenate([part for piece, _ in said for part in (pause, piece)][1:])
             else:
                 audio, rate = np.zeros(int(SILENCE[0] * SILENCE[1]), dtype='float32'), SILENCE[1]
-            self._land(lambda tmp: sf.write(tmp, audio, rate, format='FLAC', subtype='PCM_16'), self.store.clip_path(key),
-                       lambda: settle('ready', len(audio) / rate))
+            claim.land(lambda tmp: sf.write(tmp, audio, rate, format='FLAC', subtype='PCM_16'), self.store.clip_path(key),
+                       duration=len(audio) / rate)
         except speech.Unavailable as e:
             self._wait_for_speech(e, f'clip {key}')
-            settle('queued')
+            claim.retry(e)
         except Exception as e:
             log.exception('speech failed for clip %s', key)
-            settle('failed', error=str(e)[:300])
+            claim.fail(e)
 
     def find_appearance(self, character):
         """Ask how a character looks from every paragraph of the book about them, and save it. Raises TaggerError."""
         book_id, settings = character['book_id'], self.store.settings()
-        book = self.store.one('SELECT title, author, language FROM book WHERE id = ?', (book_id,))
+        book = self.store.book(book_id)
         text, spoken = {}, set()
         for seg in self.store.all('SELECT block_idx, text, character_id FROM segment WHERE book_id = ? '
                                   'ORDER BY block_idx, seq', (book_id,)):
@@ -547,7 +493,7 @@ class Pipeline:
         book_id, idx, settings = block['book_id'], block['idx'], self.store.settings()
         star = "UPDATE moment SET starred = 1, wanted = 1 WHERE block_id = ? AND kind = 'picture'", (block['id'],)
         if not self.store.run(*star).rowcount:
-            book = self.store.one('SELECT title, author, language FROM book WHERE id = ?', (book_id,))
+            book = self.store.book(book_id)
             prompt, markers = scenes.star_prompt(book, self.store.characters(book_id),
                                                  self.store.blocks(book_id, idx - CONTEXT_BLOCKS, idx - 1),
                                                  self.store.blocks(book_id, idx, idx)[0])
@@ -633,39 +579,34 @@ class Pipeline:
         return self.draw_portrait(undrawn, url) if undrawn else self.draw_moment(book_id, moment, present, url)
 
     def draw_portrait(self, character, url):
-        return self._draw(PORTRAIT, character['id'], character['portrait_rev'], self.store.portrait_path(character),
+        return self._draw(jobs.PORTRAIT, character['id'], character['portrait_rev'], self.store.portrait_path(character),
                           f"Drawing {character['name']}", lambda: self._publish_cast(character['book_id']),
                           url, images.portrait_prompt(character), images.PORTRAIT_SIZE)
 
     def draw_moment(self, book_id, moment, present, url):
         ready = [c for c in present if c['portrait_state'] == 'ready' and self.store.portrait_path(c).exists()]
         described = [(c['name'], c['appearance']) for c in present if c not in ready and c['appearance']]
-        return self._draw(MOMENT, moment['id'], moment['image_rev'], self.store.moment_path(book_id, moment['id']),
+        return self._draw(jobs.MOMENT, moment['id'], moment['image_rev'], self.store.moment_path(book_id, moment['id']),
                           'Drawing the scene', lambda: self._publish_moments(book_id, 'm.id = ?', (moment['id'],)),
                           url, images.scene_prompt(moment['scene'], [c['name'] for c in ready], described), images.SCENE_SIZE,
                           [self.store.portrait_path(c).read_bytes() for c in ready])
 
-    def _draw(self, kind, row_id, rev, target, saying, announce, url, prompt, size, references=()):
-        table, state, revision, error = kind
-        claim = f'id = ? AND {revision} = ?', (row_id, rev)
-
-        def move(before, after, problem=None):
-            return self.store.run(f"UPDATE {table} SET {state} = ?, {error} = ? WHERE {claim[0]} AND {state} = ?",
-                                  (after, problem, *claim[1], before)).rowcount
-        if not move('none', 'drawing'):
+    def _draw(self, job, row_id, rev, target, saying, announce, url, prompt, size, references=()):
+        claim = job.claim(self.store, row_id, rev)
+        if not claim:
             return ''
         announce()
         self._say('images', saying)
         unavailable = ''
         try:
             png = self.draw(url, prompt, *size, row_id * 1000 + rev, references)
-            self._land(lambda tmp: Path(tmp).write_bytes(png), target, lambda: move('drawing', 'ready'))
+            claim.land(lambda tmp: Path(tmp).write_bytes(png), target)
         except images.Unavailable as e:
             log.warning('the image service %s', e)
-            move('drawing', 'none')
+            claim.retry(e)
             unavailable = str(e)
         except Exception as e:
-            log.exception('drawing failed for %s %s', table, row_id)
-            move('drawing', 'failed', str(e)[:300])
+            log.exception('drawing failed for %s %s', job.table, row_id)
+            claim.fail(e)
         announce()
         return unavailable

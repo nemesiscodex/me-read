@@ -1,8 +1,8 @@
 import base64
 import email.parser
 import email.policy
+import functools
 import hashlib
-import http.server
 import io
 import json
 import socket
@@ -13,13 +13,18 @@ import types
 import numpy as np
 import pytest
 import soundfile as sf
+import uvicorn
+from fastapi import Response
 
+import server as speech_service
+from meread import jobs, speech
 from meread import pipeline as pipeline_module
-from meread import speech
 from meread.emotions import DIRECTIONS
 from test_speech import models, recording, speech_with_pauses  # noqa: F401  the local stubs the remote engine must never reach
 
 CONSENT = 'I own these reference voices and allow them to be cloned for my own books.'
+# The speech service's engines. A model whose engine is missing answers 400 model_not_installed.
+ENGINES = ('breeze', 'qwen', 'chatterbox-turbo', 'chatterbox-multilingual', 'audio8', 'qwen-base')
 
 
 def name_for(wav):
@@ -32,10 +37,6 @@ def wav_bytes(rate=24000, seconds=0.5, level=0.25, channels=1, subtype='PCM_16')
     return buffer.getvalue()
 
 
-def failure(status, code, message):
-    return status, json.dumps({'error': {'code': code, 'message': message}}).encode(), 'application/json', {}
-
-
 def fields_of(content_type, body):
     message = email.parser.BytesParser(policy=email.policy.HTTP).parsebytes(
         b'Content-Type: ' + content_type.encode() + b'\r\n\r\n' + body)
@@ -46,122 +47,130 @@ def fields_of(content_type, body):
     return fields
 
 
-class SpeechServer:
-    """Emulates the speech server's contract as tested: named voices, consent, a transcript per Breeze request, WAV replies."""
+class Tone:
+    """A loaded engine of the speech service that answers a tone: 20 seconds for a design or a take, half a second for a
+    line. The SpeechServer it belongs to sets what it answers."""
 
-    def __init__(self):
-        self.url = None
-        self.consent = CONSENT
-        self.voices = {}
-        self.paths, self.uploads, self.speeches = [], [], []
-        self.upload_failures, self.speech_failures = [], []
-        self.sample_rate, self.reply, self.broken = 24000, None, False
-        self.speech_delay = 0
-        self.disclaimer = 'skipped'
-        self.redirect, self.upload_reply, self.speech_status = False, None, 200
-        self.replies, self.design_disclaimer = [], None
-        self.heard, self.embed, self.speaker_reply = [], lambda audio, rate: [1., 0.], None
+    def __init__(self, server):
+        self.server = server
 
-    def answer(self, path, content_type, body):
-        self.paths.append(path)
-        if path == '/login':
-            return 200, b'<html>sign in</html>', 'text/html', {}
-        if self.redirect:
-            return 302, b'', 'text/plain', {'Location': '/login'}
-        if path == '/v1/voices':
-            return self.upload(fields_of(content_type, body))
-        if path == '/v1/audio/speech':
-            return self.synthesize(json.loads(body))
-        if path == '/v1/speaker':
-            return self.speaker(json.loads(body))
-        return failure(404, 'not_found', path)
+    def alive(self):
+        return True
 
-    def upload(self, fields):
-        self.uploads.append(fields)
-        if self.upload_reply:
-            return self.upload_reply
-        if self.upload_failures:
-            return failure(*self.upload_failures.pop(0))
-        if fields.get('consent_attestation') != self.consent:
-            return failure(400, 'consent_required', 'consent_attestation is required')
-        name = fields['name']
-        if name in self.voices:
-            return failure(409, 'voice_exists', 'a voice with that name already exists')
-        self.voices[name] = fields['voice']
-        return 201, json.dumps({'format': 'wav', 'name': name}).encode(), 'application/json', {}
-
-    def synthesize(self, body):
-        self.speeches.append(body)
-        if self.speech_delay:
-            time.sleep(self.speech_delay)
-        if self.speech_failures:
-            return failure(*self.speech_failures.pop(0))
-        voice, model = body.get('voice'), body.get('model')
-        if voice and body.get('consent_attestation') != self.consent:
-            return failure(400, 'consent_required', 'consent_attestation is required')
-        if (model not in ('breeze', 'qwen', 'chatterbox', 'audio8', 'qwen-base')
-                or (model in ('chatterbox', 'audio8', 'qwen-base') and not voice)
-                or (model == 'qwen' and (voice or not body.get('instructions')))):
-            return failure(400, 'invalid_request', f'{model} cannot take these fields')
-        if voice is None:
-            headers = {} if self.design_disclaimer is None else {'X-Crispasr-Spoken-Disclaimer': self.design_disclaimer}
-            return 200, wav_bytes(self.sample_rate, seconds=20), 'audio/wav', headers
-        if model in ('breeze', 'audio8', 'qwen-base') and not body.get('ref_text'):
-            return failure(400, 'ref_text_required', f'a {model} clone needs the transcript of its voice')
-        if self.broken or voice not in self.voices:
-            return failure(500, 'synthesis_failed', 'the voice is unknown')
-        # A take is a 15 second direction of the voice; a line is short.
-        default = wav_bytes(self.sample_rate, seconds=20 if body.get('instructions') else 0.5)
-        reply = self.replies.pop(0) if self.replies else self.reply if self.reply is not None else default
-        headers = {} if self.disclaimer is None else {'X-Crispasr-Spoken-Disclaimer': self.disclaimer}
-        return self.speech_status, reply, 'audio/wav', headers
-
-    def speaker(self, body):
-        audio, rate = sf.read(io.BytesIO(base64.b64decode(body['audio'])), dtype='float32')
-        self.heard.append({'seconds': len(audio) / rate, 'level': float(audio.mean()), 'language': body['language']})
-        if self.speaker_reply:
-            return self.speaker_reply
-        return 200, json.dumps({'embedding': self.embed(audio, rate)}).encode(), 'application/json', {}
-
-
-class Handler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.answer(b'')
-
-    def do_POST(self):
-        self.answer(self.rfile.read(int(self.headers['Content-Length'])))
-
-    def answer(self, body):
-        server = self.server.speech_server
-        target = self.raw_requestline.split()[1].decode()
-        status, reply, content_type, headers = server.answer(target, self.headers.get('Content-Type', ''), body)
-        self.send_response(status)
-        self.send_header('Content-Type', content_type)
-        for name, value in headers.items():
-            self.send_header(name, value)
-        self.send_header('Content-Length', str(len(reply)))
-        self.end_headers()
-        self.wfile.write(reply)
-
-    def log_message(self, *args):
+    def stop(self):
         pass
 
+    def speak(self, request, voice):
+        server = self.server
+        time.sleep(server.delay)
+        if server.failure:
+            raise RuntimeError(server.failure)
+        wav = server.replies.pop(0) if server.replies else wav_bytes(server.rate, seconds=20 if request.instructions else 0.5)
+        return wav, server.disclaimer if voice else server.design_disclaimer
 
-def serve(fake, port=0):
-    httpd = http.server.HTTPServer(('127.0.0.1', port), Handler)
-    httpd.speech_server = fake
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    return httpd
+    def speaker(self, audio, rate):
+        return self.server.embed(audio, rate)
+
+
+class SpeechServer:
+    """The GPU speech service's own app with Tone engines, served over HTTP on this machine. It records every request.
+    `canned` answers a path with a fixed (status, body, content type, headers) instead, for replies that only something
+    in front of the service, such as a proxy, could send."""
+
+    def __init__(self, folder, port=0):
+        self.folder, self.calls, self.canned = folder, [], {}
+        self.rate, self.replies, self.failure, self.delay = 24000, [], None, 0
+        self.disclaimer, self.design_disclaimer = 'skipped', None
+        self.embed = lambda audio, rate: [1., 0.]
+        self.gates = {name: threading.Event() for name in ENGINES}
+        self.release()
+        self.loader = speech_service.Loader({name: speech_service.Engine(1, functools.partial(self._load, name))
+                                             for name in ENGINES}, budget=len(ENGINES), wait=0.5)
+        self.app = speech_service.create_app(self.loader, speech_service.Voices(folder))
+        sock = socket.socket()
+        sock.bind(('127.0.0.1', port))
+        self.url = f'http://127.0.0.1:{sock.getsockname()[1]}'
+        self.server = uvicorn.Server(uvicorn.Config(self._record, interface='asgi3', log_config=None, access_log=False))
+        self.thread = threading.Thread(target=self.server.run, kwargs={'sockets': [sock]}, daemon=True)
+        self.thread.start()
+        while not self.server.started:
+            assert self.thread.is_alive(), 'the speech service did not start'
+            time.sleep(0.01)
+
+    def _load(self, name):
+        self.gates[name].wait()
+        return Tone(self)
+
+    def hold(self, *names):
+        """Keeps these engines loading until `release`, so the service answers their requests 503 loading."""
+        for name in names:
+            self.gates[name].clear()
+
+    def release(self):
+        for gate in self.gates.values():
+            gate.set()
+
+    async def _record(self, scope, receive, send):
+        if scope['type'] != 'http':
+            return await self.app(scope, receive, send)
+        body, more = b'', True
+        while more:
+            message = await receive()
+            body, more = body + message.get('body', b''), message.get('more_body', False)
+        self.calls.append((scope['path'], dict(scope['headers']).get(b'content-type', b'').decode(), body))
+        if scope['path'] in self.canned:
+            status, reply, content_type, headers = self.canned[scope['path']]
+            return await Response(reply, status, headers, content_type)(scope, receive, send)
+        unread = [{'type': 'http.request', 'body': body, 'more_body': False}]
+
+        async def replay():
+            return unread.pop() if unread else await receive()
+        await self.app(scope, replay, send)
+
+    def _bodies(self, path):
+        return [(content_type, body) for called, content_type, body in self.calls if called == path]
+
+    @property
+    def paths(self):
+        return [path for path, _, _ in self.calls]
+
+    @property
+    def uploads(self):
+        return [fields_of(content_type, body) for content_type, body in self._bodies('/v1/voices')]
+
+    @property
+    def speeches(self):
+        return [json.loads(body) for _, body in self._bodies('/v1/audio/speech')]
+
+    @property
+    def heard(self):
+        heard = []
+        for _, body in self._bodies('/v1/speaker'):
+            request = json.loads(body)
+            audio, rate = sf.read(io.BytesIO(base64.b64decode(request['audio'])), dtype='float32')
+            heard.append({'seconds': len(audio) / rate, 'level': float(audio.mean()), 'language': request['language']})
+        return heard
+
+    @property
+    def voices(self):
+        """The voices saved on the service, by name."""
+        return {path.stem: path.read_bytes() for path in self.folder.glob('*.wav')}
+
+    def forget_voices(self):
+        for path in self.folder.glob('*.wav'):
+            path.unlink()
+
+    def close(self):
+        self.release()
+        self.server.should_exit = True
+        self.thread.join()
 
 
 @pytest.fixture
-def speech_server():
-    fake = SpeechServer()
-    httpd = serve(fake)
-    fake.url = f'http://127.0.0.1:{httpd.server_port}'
-    yield fake
-    httpd.shutdown()
-    httpd.server_close()
+def speech_server(tmp_path):
+    server = SpeechServer(tmp_path / 'service-voices')
+    yield server
+    server.close()
 
 
 @pytest.fixture
@@ -171,8 +180,8 @@ def no_network(monkeypatch):
     monkeypatch.setattr(speech.urllib.request, 'urlopen', refused)
 
 
-def remote_engine(tmp_path, server, consent=CONSENT):
-    return speech.Engine(tmp_path / 'hub', 'breeze-gguf', tts_url=server.url, tts_consent=consent)
+def remote_engine(tmp_path, server):
+    return speech.Engine(tmp_path / 'hub', 'breeze-gguf', tts_url=server.url, tts_consent=CONSENT)
 
 
 def test_each_reference_is_uploaded_once_per_content_hash_and_reused(tmp_path, models, speech_server):
@@ -218,7 +227,7 @@ def test_speech_request_carries_transcript_consent_seed_and_disclaimer_off(tmp_p
 @pytest.mark.parametrize('rate', [24000, 44100])
 def test_returned_wav_becomes_mono_float32_at_the_rate_the_server_reports(tmp_path, models, speech_server, rate):
     voice = recording(tmp_path / 'voice.wav')
-    speech_server.sample_rate = rate
+    speech_server.rate = rate
     audio, actual = remote_engine(tmp_path, speech_server).speak('Hello.', voice, 42)
     assert actual == rate and audio.dtype == np.float32 and audio.ndim == 1
     assert len(audio) == rate // 2
@@ -239,17 +248,18 @@ def test_local_providers_never_touch_the_speech_server(tmp_path, models, no_netw
     assert rate and len(audio)
 
 
-def test_consent_refused_by_the_server_stops_before_any_speech_request(tmp_path, models, speech_server):
-    voice = recording(tmp_path / 'voice.wav')
-    with pytest.raises(RuntimeError, match=r'HTTP 400 consent_required') as refused:
-        remote_engine(tmp_path, speech_server, consent='someone else said yes').speak('Hello.', voice, 42)
-    assert 'someone else said yes' not in str(refused.value)
+def test_an_upload_the_service_refuses_stops_before_any_speech_request(tmp_path, models, speech_server):
+    voice = tmp_path / 'voice.wav'
+    voice.write_bytes(b'not a wav')
+    with pytest.raises(speech.RemoteError, match=r'HTTP 400 invalid_audio') as refused:
+        gpu_engine(tmp_path, speech_server).speak('Hello.', voice, 42)
+    assert CONSENT not in str(refused.value) and not isinstance(refused.value, speech.Unavailable)
     assert speech_server.speeches == [] and speech_server.voices == {}
 
 
 def test_server_error_on_speech_is_reported_with_its_code_and_nothing_else(tmp_path, models, speech_server):
     voice = recording(tmp_path / 'voice.wav')
-    speech_server.speech_failures = [(500, 'synthesis_failed', 'out of memory')]
+    speech_server.failure = 'out of memory'
     with pytest.raises(RuntimeError, match=r'HTTP 500 synthesis_failed: out of memory') as failed:
         remote_engine(tmp_path, speech_server).speak('Hello.', voice, 42)
     assert CONSENT not in str(failed.value) and 'Hello' not in str(failed.value)
@@ -257,17 +267,9 @@ def test_server_error_on_speech_is_reported_with_its_code_and_nothing_else(tmp_p
 
 def test_server_still_loading_is_reported_as_http_503(tmp_path, models, speech_server):
     voice = recording(tmp_path / 'voice.wav')
-    speech_server.speech_failures = [(503, 'loading', 'model is loading')]
+    speech_server.hold('breeze')
     with pytest.raises(speech.Unavailable, match='HTTP 503 loading'):
         remote_engine(tmp_path, speech_server).speak('Hello.', voice, 42)
-
-
-def test_upload_failure_sends_no_speech_request(tmp_path, models, speech_server):
-    voice = recording(tmp_path / 'voice.wav')
-    speech_server.upload_failures = [(503, 'loading', 'model is loading')]
-    with pytest.raises(speech.Unavailable, match='HTTP 503 loading'):
-        remote_engine(tmp_path, speech_server).speak('Hello.', voice, 42)
-    assert speech_server.speeches == []
 
 
 def test_an_existing_name_on_upload_means_the_voice_is_already_there(tmp_path, models, speech_server):
@@ -279,11 +281,9 @@ def test_an_existing_name_on_upload_means_the_voice_is_already_there(tmp_path, m
 
 
 def test_unreachable_server_is_reported_without_the_consent_text(tmp_path, models):
-    with socket.socket() as probe:
-        probe.bind(('127.0.0.1', 0))
-        port = probe.getsockname()[1]
     voice = recording(tmp_path / 'voice.wav')
-    engine = speech.Engine(tmp_path / 'hub', 'breeze-gguf', tts_url=f'http://127.0.0.1:{port}', tts_consent=CONSENT)
+    engine = speech.Engine(tmp_path / 'hub', 'breeze-gguf', tts_url=f'http://127.0.0.1:{speech_service.free_port()}',
+                           tts_consent=CONSENT)
     with pytest.raises(speech.Unavailable, match='Could not reach the speech server at 127.0.0.1') as unreachable:
         engine.speak('Hello.', voice, 42)
     assert CONSENT not in str(unreachable.value)
@@ -292,21 +292,27 @@ def test_unreachable_server_is_reported_without_the_consent_text(tmp_path, model
 def test_slow_speech_request_times_out_with_a_clear_error(tmp_path, models, speech_server, monkeypatch):
     voice = recording(tmp_path / 'voice.wav')
     monkeypatch.setattr(speech.Remote, 'SPEECH_TIMEOUT', 0.1)
-    speech_server.speech_delay = 0.5
+    speech_server.delay = 0.5
     with pytest.raises(speech.Unavailable, match='did not answer within 0.1 seconds'):
         remote_engine(tmp_path, speech_server).speak('Hello.', voice, 42)
 
 
 @pytest.mark.parametrize('reply, message', [
-    (b'<html>not audio</html>', 'not a readable WAV'),
     (wav_bytes(seconds=0), 'no audio'),
     (wav_bytes(level=float('nan'), subtype='FLOAT'), 'invalid mono'),
     (wav_bytes(channels=2), 'invalid mono'),
 ])
 def test_unusable_wav_from_the_server_never_becomes_audio(tmp_path, models, speech_server, reply, message):
     voice = recording(tmp_path / 'voice.wav')
-    speech_server.reply = reply
+    speech_server.replies = [reply]
     with pytest.raises(RuntimeError, match=message):
+        remote_engine(tmp_path, speech_server).speak('Hello.', voice, 42)
+
+
+def test_a_speech_reply_that_is_not_a_wav_never_becomes_audio(tmp_path, models, speech_server):
+    voice = recording(tmp_path / 'voice.wav')
+    speech_server.canned['/v1/audio/speech'] = (200, b'<html>not audio</html>', 'text/html', {speech.Remote.DISCLAIMER: 'skipped'})
+    with pytest.raises(RuntimeError, match='not a readable WAV'):
         remote_engine(tmp_path, speech_server).speak('Hello.', voice, 42)
 
 
@@ -314,7 +320,7 @@ def test_forgotten_voice_is_uploaded_again_once_and_the_request_retried_once(tmp
     voice = recording(tmp_path / 'voice.wav')
     engine = remote_engine(tmp_path, speech_server)
     engine.speak('One.', voice, 42)
-    speech_server.voices.clear()
+    speech_server.forget_voices()
     audio, rate = engine.speak('Two.', voice, 42)
     assert len(speech_server.uploads) == 2 and len(speech_server.speeches) == 3
     assert speech_server.voices == {name_for(voice.read_bytes()): voice.read_bytes()} and len(audio) == rate // 2
@@ -324,8 +330,8 @@ def test_a_server_that_keeps_failing_gets_exactly_one_retry_not_a_loop(tmp_path,
     voice = recording(tmp_path / 'voice.wav')
     engine = remote_engine(tmp_path, speech_server)
     engine.speak('One.', voice, 42)
-    speech_server.voices.clear()
-    speech_server.broken = True
+    speech_server.forget_voices()
+    speech_server.failure = 'out of memory'
     uploads, speeches = len(speech_server.uploads), len(speech_server.speeches)
     with pytest.raises(RuntimeError, match='synthesis_failed'):
         engine.speak('Two.', voice, 42)
@@ -335,7 +341,7 @@ def test_a_server_that_keeps_failing_gets_exactly_one_retry_not_a_loop(tmp_path,
 
 def test_a_fresh_upload_that_is_followed_by_a_failed_speech_is_not_retried(tmp_path, models, speech_server):
     voice = recording(tmp_path / 'voice.wav')
-    speech_server.broken = True
+    speech_server.failure = 'out of memory'
     with pytest.raises(RuntimeError, match='synthesis_failed'):
         remote_engine(tmp_path, speech_server).speak('Hello.', voice, 42)
     assert len(speech_server.uploads) == 1 and len(speech_server.speeches) == 1
@@ -390,7 +396,7 @@ def test_failed_remote_narration_lands_no_clip_and_keeps_the_cast(world, tmp_pat
     narrator = world.store.narrator(world.book['id'])
     assert world.client.post(f"/api/characters/{narrator['id']}/voice",
                              files={'file': ('voice.wav', voice.read_bytes(), 'audio/wav')}).status_code == 200
-    speech_server.speech_failures = [(500, 'synthesis_failed', 'out of memory')]
+    speech_server.failure = 'out of memory'
     world.pipeline.engine = remote_engine(tmp_path, speech_server)
     world.pipeline.set_focus(world.book['id'], 0, 0, 0, 0)
     assert world.pipeline.speech_step()
@@ -417,14 +423,6 @@ def test_spanish_book_under_breeze_gguf_fails_before_any_upload_or_model_load(wo
     assert speech_server.paths == [] and models.loads == models.snapshots == models.transcribed == []
 
 
-def refused_port():
-    httpd = serve(SpeechServer())
-    port = httpd.server_port
-    httpd.shutdown()
-    httpd.server_close()
-    return port
-
-
 def test_a_speech_server_outage_waits_then_retries_and_no_clip_fails(world, tmp_path, models, monkeypatch):
     clock = [1000.0]
     monkeypatch.setattr(pipeline_module, 'time', types.SimpleNamespace(monotonic=lambda: clock[0]))
@@ -433,7 +431,7 @@ def test_a_speech_server_outage_waits_then_retries_and_no_clip_fails(world, tmp_
     assert world.client.post(f"/api/characters/{narrator['id']}/voice",
                              files={'file': ('voice.wav', voice.read_bytes(), 'audio/wav')}).status_code == 200
     models.transcript = 'The saved narrator says this.'
-    fake, port, running, states = SpeechServer(), refused_port(), None, []
+    port, running, states = speech_service.free_port(), None, []
     world.pipeline.engine = speech.Engine(tmp_path / 'hub', 'breeze-gguf', tts_url=f'http://127.0.0.1:{port}', tts_consent=CONSENT)
     world.pipeline.set_focus(world.book['id'], 0, 0, 0, 0)
 
@@ -448,27 +446,27 @@ def test_a_speech_server_outage_waits_then_retries_and_no_clip_fails(world, tmp_
         clock[0] = 1005
         assert not world.pipeline.speech_step()
         assert 'unavailable' in world.pipeline.idle['speech']
-        fake.upload_failures = [(503, 'loading', 'model is loading')]
-        running = serve(fake, port)
+        running = SpeechServer(tmp_path / 'service-voices', port)
+        running.hold('breeze')
         clock[0] = 1015
         assert world.pipeline.speech_step()
-        assert clip()['audio_state'] == 'none' and fake.paths == ['/v1/voices']
+        assert clip()['audio_state'] == 'none' and running.paths == ['/v1/voices', '/v1/audio/speech']
         assert world.pipeline.retry_at['speech'] == 1030
         clock[0] = 1029
         assert not world.pipeline.speech_step()
-        assert fake.paths == ['/v1/voices']
+        assert running.paths == ['/v1/voices', '/v1/audio/speech']
+        running.release()
         clock[0] = 1030
         assert world.pipeline.speech_step()
         ready = clip()
         assert (ready['audio_state'], ready['duration']) == ('ready', 0.5)
         assert world.pipeline.idle['speech'] is None
         assert 'failed' not in states
-        assert fake.paths == ['/v1/voices', '/v1/voices', '/v1/audio/speech']
-        assert fake.speeches[0]['ref_text'] == 'The saved narrator says this.'
+        assert running.paths == ['/v1/voices', '/v1/audio/speech', '/v1/audio/speech']
+        assert running.speeches[0]['ref_text'] == 'The saved narrator says this.'
     finally:
         if running:
-            running.shutdown()
-            running.server_close()
+            running.close()
 
 
 def test_a_revision_change_during_an_outage_is_not_overwritten_by_the_release(world, tmp_path, models, monkeypatch):
@@ -476,7 +474,8 @@ def test_a_revision_change_during_an_outage_is_not_overwritten_by_the_release(wo
     narrator = world.store.narrator(world.book['id'])
     assert world.client.post(f"/api/characters/{narrator['id']}/voice",
                              files={'file': ('voice.wav', voice.read_bytes(), 'audio/wav')}).status_code == 200
-    engine = speech.Engine(tmp_path / 'hub', 'breeze-gguf', tts_url=f'http://127.0.0.1:{refused_port()}', tts_consent=CONSENT)
+    engine = speech.Engine(tmp_path / 'hub', 'breeze-gguf', tts_url=f'http://127.0.0.1:{speech_service.free_port()}',
+                           tts_consent=CONSENT)
     world.pipeline.engine = engine
     world.pipeline.set_focus(world.book['id'], 0, 0, 0, 0)
     clip_id = world.chapter()[0]['segments'][0]['id']
@@ -488,7 +487,7 @@ def test_a_revision_change_during_an_outage_is_not_overwritten_by_the_release(wo
             upload(*args)
         except speech.Unavailable:
             world.store.invalidate_audio('id = ?', (clip_id,))
-            world.store.run("UPDATE segment SET audio_state = 'generating' WHERE id = ? AND audio_rev = ?", (clip_id, rev + 1))
+            jobs.AUDIO.claim(world.store, clip_id, rev + 1)
             raise
     monkeypatch.setattr(engine.remote, 'upload', upload_during_outage)
     assert world.pipeline.speech_step()
@@ -498,7 +497,7 @@ def test_a_revision_change_during_an_outage_is_not_overwritten_by_the_release(wo
 
 @pytest.mark.parametrize('case, reason', [
     ('server_error', 'HTTP 500 synthesis_failed: out of memory'),
-    ('consent', 'HTTP 400 consent_required'),
+    ('not_installed', 'HTTP 400 model_not_installed'),
 ])
 def test_definitive_speech_errors_still_fail_the_clip_and_are_not_held_back(world, tmp_path, models, speech_server, case, reason):
     voice = recording(tmp_path / 'upload.wav')
@@ -506,10 +505,10 @@ def test_definitive_speech_errors_still_fail_the_clip_and_are_not_held_back(worl
     assert world.client.post(f"/api/characters/{narrator['id']}/voice",
                              files={'file': ('voice.wav', voice.read_bytes(), 'audio/wav')}).status_code == 200
     if case == 'server_error':
-        speech_server.speech_failures = [(500, 'synthesis_failed', 'out of memory')]
-        world.pipeline.engine = remote_engine(tmp_path, speech_server)
+        speech_server.failure = 'out of memory'
     else:
-        world.pipeline.engine = remote_engine(tmp_path, speech_server, consent='someone else said yes')
+        speech_server.loader.engines.pop('breeze')
+    world.pipeline.engine = remote_engine(tmp_path, speech_server)
     world.pipeline.set_focus(world.book['id'], 0, 0, 0, 0)
     assert world.pipeline.speech_step()
     clip = world.chapter()[0]['segments'][0]
@@ -529,7 +528,7 @@ def test_an_applied_disclaimer_leaves_the_clip_failed_with_no_audio(world, tmp_p
     world.pipeline.set_focus(world.book['id'], 0, 0, 0, 0)
     assert world.pipeline.speech_step()
     clip = world.chapter()[0]['segments'][0]
-    assert clip['audio_state'] == 'failed' and '--accept-marking-responsibility' in clip['error']
+    assert clip['audio_state'] == 'failed' and 'HTTP 502 disclaimer_applied' in clip['error']
     assert CONSENT not in clip['error'] and clip['duration'] is None
     assert not world.store.audio_path(world.book['id'], clip['id']).exists()
     assert world.client.get(f"/api/segments/{clip['id']}/audio").status_code == 404
@@ -539,7 +538,7 @@ def test_a_spoken_disclaimer_applied_is_refused_and_no_audio_is_decoded(tmp_path
     voice = recording(tmp_path / 'voice.wav')
     speech_server.disclaimer = 'applied'
     monkeypatch.setattr(speech, 'decode_wav', lambda data: pytest.fail('the audio was decoded'))
-    with pytest.raises(RuntimeError, match='--accept-marking-responsibility') as applied:
+    with pytest.raises(speech.RemoteError, match='HTTP 502 disclaimer_applied') as applied:
         remote_engine(tmp_path, speech_server).speak('Hello.', voice, 42)
     assert CONSENT not in str(applied.value)
 
@@ -563,19 +562,18 @@ def test_a_missing_disclaimer_header_is_refused_because_the_state_is_unconfirmed
 def test_a_redirect_is_an_error_it_is_not_followed_and_the_voice_is_not_remembered(tmp_path, models, speech_server):
     voice = recording(tmp_path / 'voice.wav')
     engine = remote_engine(tmp_path, speech_server)
-    speech_server.redirect = True
-    with pytest.raises(RuntimeError, match='HTTP 302') as redirected:
+    speech_server.canned['/v1/voices'] = (302, b'', 'text/plain', {'Location': '/login'})
+    with pytest.raises(RuntimeError, match='HTTP 302'):
         engine.speak('Hello.', voice, 42)
-    assert speech_server.paths == ['/v1/voices'] and speech_server.speeches == []
-    assert engine.uploads == {} and 'sign in' not in str(redirected.value)
-    speech_server.redirect = False
+    assert speech_server.paths == ['/v1/voices'] and engine.uploads == {}
+    speech_server.canned.clear()
     engine.speak('Hello.', voice, 42)
-    assert len(speech_server.uploads) == 1 and len(speech_server.speeches) == 1
+    assert speech_server.paths == ['/v1/voices', '/v1/voices', '/v1/audio/speech']
 
 
 def test_an_upload_answer_other_than_created_is_not_a_saved_voice(tmp_path, models, speech_server):
     voice = recording(tmp_path / 'voice.wav')
-    speech_server.upload_reply = (200, b'<html>sign in</html>', 'text/html', {})
+    speech_server.canned['/v1/voices'] = (200, b'<html>sign in</html>', 'text/html', {})
     engine = remote_engine(tmp_path, speech_server)
     with pytest.raises(RuntimeError, match='did not confirm the voice upload'):
         engine.speak('Hello.', voice, 42)
@@ -584,7 +582,7 @@ def test_an_upload_answer_other_than_created_is_not_a_saved_voice(tmp_path, mode
 
 def test_a_speech_answer_other_than_ok_is_not_audio(tmp_path, models, speech_server):
     voice = recording(tmp_path / 'voice.wav')
-    speech_server.speech_status = 202
+    speech_server.canned['/v1/audio/speech'] = (202, wav_bytes(), 'audio/wav', {speech.Remote.DISCLAIMER: 'skipped'})
     with pytest.raises(RuntimeError, match='instead of audio'):
         remote_engine(tmp_path, speech_server).speak('Hello.', voice, 42)
 
@@ -604,7 +602,7 @@ def asked(**fields):
     return {**fields, 'response_format': 'wav', 'consent_attestation': CONSENT, 'spoken_disclaimer': False}
 
 
-@pytest.mark.parametrize('provider', list(speech.PROVIDERS))
+@pytest.mark.parametrize('provider', list(speech.NARRATORS))
 def test_english_voices_are_designed_by_breeze_on_the_service_with_no_model_on_this_mac(tmp_path, models, speech_server, provider):
     audio, rate = gpu_engine(tmp_path, speech_server, provider).design('A low voice.', 42)
     assert speech_server.speeches == [asked(model='breeze', input=speech.SAMPLE_TEXT['en'][1], instructions='A low voice.',
@@ -679,16 +677,17 @@ def test_a_sample_that_sounds_like_a_voice_in_use_is_shifted_by_the_service_spea
     (202, b'{"embedding": [1, 0]}', 'application/json', {}),
 ])
 def test_a_speaker_answer_that_is_not_a_usable_embedding_is_an_error(tmp_path, models, speech_server, reply):
-    speech_server.speaker_reply = reply
+    speech_server.canned['/v1/speaker'] = reply
     with pytest.raises(speech.RemoteError, match='speaker embedding') as failed:
         gpu_engine(tmp_path, speech_server).design('A low voice.', 42, others=[recording(tmp_path / 'other.wav')])
     assert not isinstance(failed.value, speech.Unavailable)
 
 
 def test_a_speaker_comparison_while_the_service_loads_is_unavailable(tmp_path, models, speech_server):
-    speech_server.speaker_reply = failure(503, 'loading', 'chatterbox is loading')
+    speech_server.hold('chatterbox-turbo')
     with pytest.raises(speech.Unavailable, match='HTTP 503 loading'):
         gpu_engine(tmp_path, speech_server).design('A low voice.', 42, others=[recording(tmp_path / 'other.wav')])
+    assert speech_server.paths == ['/v1/audio/speech', '/v1/speaker']
 
 
 def test_the_speaker_embedding_comes_back_as_a_unit_vector(speech_server):
@@ -716,14 +715,14 @@ def test_a_line_that_keeps_rambling_is_kept_after_three_tries(tmp_path, models, 
     assert [call['seed'] for call in speech_server.speeches] == [42, 43, 44] and len(audio) == 9 * rate
 
 
-@pytest.mark.parametrize('provider', ['fish', 'breeze', 'qwen-base'])
-def test_local_narrators_still_narrate_on_this_mac_when_the_service_designs(tmp_path, models, speech_server, provider):
+@pytest.mark.parametrize('provider, model', [('fish', speech.FISH), ('breeze', speech.BREEZE), ('qwen-base', speech.QWEN_BASE)])
+def test_local_narrators_still_narrate_on_this_mac_when_the_service_designs(tmp_path, models, speech_server, provider, model):
     voice = recording(tmp_path / 'voice.wav')
     engine = gpu_engine(tmp_path, speech_server, provider)
     engine.design('A low voice.', 42)
     engine.speak('Hello.', voice, 42)
     assert [call['model'] for call in speech_server.speeches] == ['breeze']
-    assert models.loads == [speech.TRANSCRIBER, speech.PROVIDERS[provider].models[0]]
+    assert models.loads == [speech.TRANSCRIBER, model]
 
 
 def test_with_the_service_chatterbox_designs_directs_compares_and_narrates_without_an_mlx_speech_model(tmp_path, models,
@@ -739,7 +738,6 @@ def test_with_the_service_chatterbox_designs_directs_compares_and_narrates_witho
     assert [call['model'] for call in speech_server.speeches] == ['breeze', 'breeze', 'breeze', 'chatterbox']
     assert models.loads == [speech.TRANSCRIBER], 'Whisper once, for the take'
     assert {repo for repo, _ in models.snapshots} == {speech.TRANSCRIBER}
-    assert engine.chatterbox is engine.multilingual is engine.designer is engine.breeze is engine.narrator is None
 
 
 PINNED_IDENTITY = {
@@ -780,7 +778,7 @@ PINNED_IDENTITY = {
 }
 
 
-@pytest.mark.parametrize('provider', list(speech.PROVIDERS))
+@pytest.mark.parametrize('provider', list(speech.NARRATORS))
 def test_generation_identity_is_pinned_and_does_not_depend_on_where_the_models_run(tmp_path, provider):
     with_service = speech.Engine(tmp_path / 'hub', provider, tts_url='http://127.0.0.1:9', tts_consent=CONSENT)
     assert with_service.generation_identity == PINNED_IDENTITY[provider]
@@ -871,7 +869,7 @@ def test_a_rambling_audio8_line_is_retaken_with_the_next_seed(tmp_path, models, 
 
 def test_without_a_service_spanish_stays_with_chatterbox_on_this_mac(tmp_path):
     engine = speech.Engine(tmp_path / 'hub')
-    assert [engine.provider_for(language).name for language in ('en', 'es')] == ['chatterbox', 'chatterbox']
+    assert [engine.identity(language)['provider'] for language in ('en', 'es')] == ['chatterbox', 'chatterbox']
     assert engine.generation_identity == PINNED_IDENTITY['chatterbox']
 
 
@@ -883,7 +881,7 @@ def test_with_a_service_the_default_identity_names_each_languages_narrator(tmp_p
 def test_choosing_a_narrator_overrides_the_language_defaults(tmp_path):
     for choice in ('chatterbox', 'audio8'):
         engine = gpu_engine_at(tmp_path, choice)
-        assert {engine.provider_for(language).name for language in ('en', 'es')} == {choice}
+        assert {engine.identity(language)['provider'] for language in ('en', 'es')} == {choice}
         assert engine.generation_identity == PINNED_IDENTITY[choice]
 
 

@@ -3,7 +3,7 @@ import io
 import pytest
 import soundfile as sf
 
-from meread import speech
+from meread import jobs, speech
 from meread.store import Store
 from test_pipeline import focus
 
@@ -181,7 +181,7 @@ def test_a_restart_keeps_ready_clips_and_forgets_the_queue(world):
     ready = ask(world, voice, 'Done.').json()[0]['key']
     world.pipeline.speech_step()
     reading, waiting = (c['key'] for c in ask(world, voice, 'Reading.', 'Waiting.').json())
-    world.store.run("UPDATE clip SET state = 'generating' WHERE key = ?", (reading,))
+    jobs.CLIP.claim(world.store, reading)
     Store(world.store.home)
     assert [clip(world, key)['state'] for key in (ready, reading, waiting)] == ['ready', 'idle', 'idle']
     assert not world.pipeline.speech_step()
@@ -196,7 +196,7 @@ def test_a_new_voice_or_narrator_reads_new_clips(world):
     new = ask(world, voice, 'Hi.').json()[0]
     assert new['key'] != old['key'] and new['state'] == 'queued'
     assert clip(world, old['key'])['state'] == 'ready'
-    world.engine.provider = speech.PROVIDERS['ming']
+    world.engine.narrator = speech.NARRATORS['ming']
     assert ask(world, voice, 'Hi.').json()[0]['key'] not in (old['key'], new['key'])
 
 

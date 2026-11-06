@@ -84,7 +84,7 @@ def test_a_library_from_before_leveling_has_its_clips_leveled_once_and_in_place(
     world.store.run('DROP INDEX segment_unleveled')
     world.store.run('ALTER TABLE segment DROP COLUMN leveled')
 
-    reopened = create_app(tmp_path, engine=world.engine, tts_provider='chatterbox', run_workers=False)
+    reopened = create_app(tmp_path, engine=world.engine, run_workers=False)
     with TestClient(reopened):
         store, pipeline = reopened.state.store, reopened.state.pipeline
         assert {row['leveled'] for row in store.all('SELECT leveled FROM segment')} == {0}

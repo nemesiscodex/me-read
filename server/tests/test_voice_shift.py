@@ -151,7 +151,7 @@ def test_a_take_shift_is_a_whole_number_of_semitones_for_a_take_the_book_can_use
     assert shift_take(world, 99999, 'angry', {'semitones': -3}).status_code == 404
     assert world.store.all('SELECT * FROM voice_take') == []
 
-    world.engine.provider = speech.PROVIDERS['fish']
+    world.engine.narrator = speech.NARRATORS['fish']
     book = world.client.post('/api/books', files={'file': ('es.epub', make_epub((SPANISH,)), 'application/epub+zip')}).json()
     narrador = world.store.narrator(book['id'])['id']
     assert shift_take(world, narrador, 'angry', {'semitones': -3}).status_code == 422

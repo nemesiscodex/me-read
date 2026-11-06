@@ -136,6 +136,8 @@ cd server && uv run pytest
 cd web && pnpm test
 ```
 
+After you change the database schema or the columns the server returns, regenerate the web client's types in `web/src/generated/server.ts` with `cd server && uv run python -m meread.web_types`. A server test fails until you do.
+
 For frontend work, keep the server running and start Vite in `web/`. It serves on port 5183 and forwards `/api` to the server:
 
 ```sh
